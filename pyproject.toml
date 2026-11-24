@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=66"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openhop-geofence"
+# Single source: src/openhop_geofence/__init__.py (__version__).
+dynamic = ["version"]
+description = "Geofenced Repeat/Monitor mode control for an OpenHop MeshCore repeater"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Edward Sandor", email = "public+git@sandorlaboratories.com" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Communications :: Ham Radio",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# Polygon zones and MeshMapper coverage.
+geo = ["shapely>=1.8"]
+# Web interface and comment-preserving configuration edits.
+web = ["flask>=2.2", "waitress>=2.1", "tomlkit>=0.11"]
+# Optional MeshCore companion reporting and commands.
+companion = ["meshcore>=2.0"]
+
+[project.scripts]
+openhop-geofence = "openhop_geofence.cli:main"
+openhop-geofence-trace = "openhop_geofence.trace_convert:main"
+
+[project.urls]
+Homepage = "https://github.com/ewsandor/openhop-geofence-service"
+Issues = "https://github.com/ewsandor/openhop-geofence-service/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "openhop_geofence.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openhop_geofence = ["templates/*.html", "static/*"]

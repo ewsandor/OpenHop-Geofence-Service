@@ -1,0 +1,60 @@
+/* OpenHop Geofence web interface: small, responsive, no external assets. */
+:root {
+  --bg: #f4f5f7; --card: #fff; --text: #1d2330; --muted: #5d6675; --line: #d8dce3;
+  --forward: #1f8a3b; --monitor: #2563eb; --no_tx: #c2410c; --unknown: #6b7280; --danger: #b91c1c;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171c; --card: #1d2128; --text: #e6e8ec; --muted: #9aa3b1; --line: #343a44; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+  gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); background: var(--card); }
+h1 { font-size: 1.15rem; margin: 0; }
+h1 small { color: var(--muted); font-weight: normal; font-size: .85rem; }
+h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
+main { max-width: 1100px; margin: 0 auto; padding: .75rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; margin-bottom: .75rem; }
+.narrow { max-width: 360px; margin: 2rem auto; }
+.columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .75rem; }
+.columns .card { margin-bottom: 0; }
+.columns + .card { margin-top: .75rem; }
+dl.grid { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .75rem; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+label { display: flex; flex-direction: column; gap: .2rem; font-size: .9rem; color: var(--muted); }
+input, select, textarea { font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text); }
+textarea { width: 100%; font-family: ui-monospace, monospace; font-size: .85rem; }
+button, .button { font: inherit; min-height: 44px; padding: .5rem .9rem; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); text-decoration: none;
+  display: inline-flex; align-items: center; }
+button.primary { background: var(--monitor); border-color: var(--monitor); color: #fff; }
+button.danger { border-color: var(--danger); color: var(--danger); }
+button.link { min-height: auto; border: 0; background: none; padding: 0; color: var(--monitor); text-decoration: underline; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .5rem; }
+.fields .wide { grid-column: 1 / -1; }
+form#login-form { display: grid; gap: .75rem; }
+.mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-bottom: .6rem; }
+.badge { font-weight: 600; padding: .35rem .8rem; border-radius: 999px; color: #fff; background: var(--unknown); }
+.badge.forward { background: var(--forward); } .badge.monitor { background: var(--monitor); }
+.badge.no_tx { background: var(--no_tx); }
+.banner { background: var(--no_tx); color: #fff; padding: .6rem 1rem; border-radius: 8px; margin: 0 0 .75rem; }
+.message { background: var(--card); border-left: 4px solid var(--monitor); padding: .5rem 1rem; margin: 0 0 .75rem; }
+.message.err { border-left-color: var(--danger); }
+.error { color: var(--danger); min-height: 1.2em; margin: 0; }
+.notice, .hint { color: var(--muted); font-size: .9rem; }
+#map { height: 420px; border-radius: 6px; border: 1px solid var(--line); }
+@media (max-width: 600px) { #map { height: 300px; } }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem .8rem; align-items: center; font-size: .85rem; margin-top: .5rem; }
+.legend label { flex-direction: row; align-items: center; }
+.sw { display: inline-block; width: 14px; height: 4px; margin-right: -.4rem; }
+.sw.forward { background: var(--forward); } .sw.monitor { background: var(--monitor); }
+.sw.no_tx { background: var(--no_tx); } .sw.unknown { background: var(--unknown); }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th, td { text-align: left; padding: .35rem; border-bottom: 1px solid var(--line); }
+td button { min-height: 32px; padding: .2rem .5rem; }
+details summary { cursor: pointer; margin: .5rem 0; }
+[hidden] { display: none !important; }

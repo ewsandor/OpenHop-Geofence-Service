@@ -1,0 +1,2 @@
+# sysusers.d(5): system account for openhop-geofence.service
+u openhop-geofence - "OpenHop geofence service" /var/lib/openhop-geofence /usr/sbin/nologin

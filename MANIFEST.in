@@ -1,0 +1,6 @@
+# Extra files in the source distribution (sdist) for portable installs.
+include LICENSE README.md DESIGN.md AGENTS.md CLAUDE.md
+recursive-include config *.example
+recursive-include packaging *
+recursive-include tests *.py
+recursive-include debian *

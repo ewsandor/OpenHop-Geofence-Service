@@ -1,0 +1,51 @@
+# Example gpsd -> NMEA file bridge for OpenHop's "gps.source: file" reader.
+#
+# Not installed or enabled automatically. This is independent of the
+# geofence service. gpsd remains the only owner of the GPS receiver.
+#
+# The bridge periodically replaces /run/gpsd-nmea/nmea.txt (tmpfs; never on
+# the SD card) with the most recent few NMEA sentences. When gpsd has no
+# data, the file is removed, so OpenHop does not read a stale position.
+#
+# Install:
+#   sudo cp gpsd-nmea-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gpsd-nmea-bridge
+# Then in OpenHop's config.yaml:
+#   gps:
+#     enabled: true
+#     source: file
+#     source_path: "/run/gpsd-nmea/nmea.txt"
+#
+# Verify the result against your installed OpenHop release; the file format
+# accepted by its reader may change.
+
+[Unit]
+Description=gpsd to NMEA file bridge for OpenHop
+After=gpsd.socket gpsd.service
+Wants=gpsd.socket
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=gpsd-nmea
+# World-readable so the OpenHop service user can read it.
+RuntimeDirectoryMode=0755
+UMask=0022
+# gpspipe -r: raw NMEA; -n: sentences per snapshot; -x: exit after N seconds.
+ExecStart=/bin/sh -c 'd="$RUNTIME_DIRECTORY"; while :; do \
+  if gpspipe -r -n 12 -x 5 > "$d/nmea.tmp" 2>/dev/null && [ -s "$d/nmea.tmp" ]; then \
+    mv -f "$d/nmea.tmp" "$d/nmea.txt"; \
+  else \
+    rm -f "$d/nmea.tmp" "$d/nmea.txt"; sleep 2; \
+  fi; \
+done'
+Restart=always
+RestartSec=5
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+# Pure-Python package built with pybuild; byte-compiled at installation by
+# dh_python3 (py3compile), so no .pyc files are shipped.
+
+export PYBUILD_NAME=openhop-geofence
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	PYTHONPATH=src:tests PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
+endif
+
+# Install the unit disabled. Upgrades restart it only if the operator enabled it.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable

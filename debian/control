@@ -1,0 +1,31 @@
+Source: openhop-geofence
+Section: hamradio
+Priority: optional
+Maintainer: Edward Sandor <public+git@sandorlaboratories.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               python3-all,
+               python3-setuptools,
+               pybuild-plugin-pyproject
+Standards-Version: 4.7.0
+Homepage: https://github.com/ewsandor/openhop-geofence-service
+Rules-Requires-Root: no
+X-Python3-Version: >= 3.11
+
+Package: openhop-geofence
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}, adduser, procps
+Recommends: python3-shapely,
+            python3-flask,
+            python3-waitress,
+            python3-tomlkit,
+            libjs-leaflet
+Suggests: gpsd, gpsd-clients, python3-venv
+Description: geofenced Repeat/Monitor control for an OpenHop MeshCore repeater
+ Switches an OpenHop MeshCore repeater between Repeat (forward) and Monitor
+ (or no_tx) based on configured GPS zones and optional MeshMapper coverage.
+ Includes hysteresis, a safe mode latch, an optional web interface with a
+ map, and an optional MeshCore companion for reports and commands.
+ .
+ The service is installed disabled. Review /etc/openhop-geofence/config.toml
+ and enable it with "systemctl enable --now openhop-geofence".

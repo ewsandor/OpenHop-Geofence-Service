@@ -1,0 +1,78 @@
+# systemd unit for the OpenHop geofence service (see DESIGN.md sections 5 and 8).
+#
+# Installed disabled. Review /etc/openhop-geofence/config.toml first, then:
+#   sudo systemctl enable --now openhop-geofence
+#
+# Override settings with "systemctl edit openhop-geofence" rather than editing
+# this file. A virtual environment interpreter (for the optional companion)
+# is configured by overriding ExecStart= in a drop-in; see README.md.
+
+[Unit]
+Description=OpenHop geofence Repeat/Monitor controller
+Documentation=https://github.com/ewsandor/openhop-geofence-service
+# Remote gpsd, OpenHop, and the internet are optional; the service retries
+# unavailable dependencies itself and never waits for network-online.target.
+After=network.target gpsd.socket gpsd.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+ExecStart=/usr/bin/openhop-geofence --config /etc/openhop-geofence/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# 75: restart requested through the web interface or a companion DM.
+RestartForceExitStatus=75
+# 78: invalid configuration (safe mode latched); do not restart in a loop.
+RestartPreventExitStatus=78
+TimeoutStopSec=30
+
+User=openhop-geofence
+Group=openhop-geofence
+UMask=0027
+
+# Directories created and owned by systemd. /run is RAM-backed and kept across
+# service restarts so MeshMapper request accounting survives a restart.
+RuntimeDirectory=openhop-geofence
+RuntimeDirectoryPreserve=yes
+StateDirectory=openhop-geofence
+CacheDirectory=openhop-geofence
+
+# Never write .pyc files at runtime (byte-compiled at installation instead),
+# and keep NumPy (via Shapely) from starting idle math threads.
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=PYTHONUNBUFFERED=1
+
+# Filesystem protection. The configuration directory is writable for web
+# edits (atomic replace); secrets stay read-only to the service.
+ProtectSystem=strict
+ReadWritePaths=/etc/openhop-geofence
+ReadOnlyPaths=-/etc/openhop-geofence/secrets
+# Uncomment for disk trace recording (diagnostics.storage = "disk"):
+#LogsDirectory=openhop-geofence
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+# AF_UNIX: sd_notify and D-Bus (logind reboot, BlueZ for companion BLE).
+# AF_INET/AF_INET6: OpenHop, gpsd, MeshMapper, web interface, companion TCP.
+# A companion serial transport needs a drop-in; see README.md.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

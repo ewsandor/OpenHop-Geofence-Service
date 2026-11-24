@@ -1,0 +1,114 @@
+# openhop-geofence configuration (TOML).
+#
+# Installed as /etc/openhop-geofence/config.toml. Validate after editing:
+#   openhop-geofence --check-config
+# Apply without restarting:  sudo systemctl reload openhop-geofence
+#
+# Secrets (API keys, web accounts) live in separate files under
+# /etc/openhop-geofence/secrets and are never edited through the web interface.
+# Replace the illustrative zone coordinates below before enabling the service.
+
+[openhop]
+base_url = "http://127.0.0.1:8000"
+api_key_file = "/etc/openhop-geofence/secrets/openhop.key"
+timeout_seconds = 2.0
+
+[gpsd]
+host = "127.0.0.1"
+port = 2947
+stale_after_seconds = 10.0
+# device = "/dev/serial/by-id/REPLACE_WITH_RECEIVER"
+
+[policy]
+monitor_mode = "monitor"   # How Monitor is applied: "monitor" or "no_tx"
+outside = "monitor"        # Outside zones, or when MeshMapper is unavailable
+repeat_delay_seconds = 10.0
+minimum_monitor_seconds = 30.0
+
+[meshmapper]
+enabled = true # Set false to disable all MeshMapper requests
+api_key_file = "/etc/openhop-geofence/secrets/meshmapper.key"
+coverage_url = "https://meshmapper.net/coverage.php"
+region_urls = [] # Add official authorized region/group site(s) at setup
+lookback_days = 14
+covered_types = ["BIDIR", "TX", "RX", "DISC"]
+match_radio = true
+# radio_filter = "906.875,250,10,5" # MHz,kHz,SF,CR; required if OpenHop has several radios
+refresh_seconds = 21600
+max_cache_age_seconds = 86400
+boundary_refresh_seconds = 86400
+max_boundary_age_seconds = 604800
+daily_request_budget = 80
+
+[meshmapper.experimental]
+# Experimental: select Repeat in weakly covered squares, e.g. for a parked
+# repeater providing fill-in coverage at the edge of the fixed network.
+weak_coverage_thresholds = false
+# min_snr_db = 0.0     # Covered squares with weaker average SNR select Repeat
+# min_effective = 2.0  # Covered squares scoring below this (0-3) select Repeat
+
+[web]
+enabled = true
+bind = "127.0.0.1"
+port = 8080
+auth_file = "/etc/openhop-geofence/secrets/web-auth"
+allow_config_edit = true
+map_enabled = true # Set false to disable maps; forms still work
+# leaflet_dir = "/usr/share/javascript/leaflet" # From Debian libjs-leaflet
+# Tile provider used by the browser; follow its tile usage policy.
+# tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+# tile_attribution = "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors"
+
+[companion]
+enabled = false
+transport = "tcp" # "tcp", "ble", or "serial"
+host = "127.0.0.1"
+port = 5000 # Match the configured OpenHop companion TCP port
+openhop_companion_name = "RepeaterCompanion"
+shares_openhop_radio = true
+report_channels = [0] # Existing companion channel indexes; [] disables reports
+report_level = "warning" # "info", "warning", or "error"
+outage_warning_after_seconds = 300
+minimum_report_interval_seconds = 60
+command_prefix = "!geofence"
+command_authorization = "admin_keys" # Or explicitly "any_sender"
+admin_public_keys = [] # Full public keys; empty list permits no control
+last_gasp_enabled = true
+last_gasp_max_attempts = 3 # Total submissions across report channels
+last_gasp_grace_seconds = 10.0 # Initial value; validate against airtime
+# serial_device = "/dev/serial/by-id/REPLACE_WITH_COMPANION"
+# serial_baud = 115200
+# ble_address = "REPLACE_WITH_COMPANION_ADDRESS"
+# ble_pin_file = "/etc/openhop-geofence/secrets/companion-ble-pin"
+
+[maintenance]
+allow_reboot = false # Requires separate OS authorization
+
+[diagnostics]
+enabled = false
+storage = "ram" # "disk" requires explicit local configuration
+sample_interval_seconds = 5.0
+max_buffer_bytes = 4194304 # 4 MiB rolling record buffer
+max_context_bytes = 8388608 # 8 MiB zone and coverage context
+# Disk recording requires all three settings below:
+# directory = "/var/log/openhop-geofence/trace"
+# max_disk_bytes = 33554432 # 32 MiB total, including context
+# max_age_seconds = 86400 # Retain at most 24 hours
+
+[[zones]]
+id = "home-repeat"
+name = "Home repeat area"
+role = "repeat"
+shape = "circle"
+latitude = 40.0
+longitude = -105.0
+radius_m = 1000.0
+
+[[zones]]
+id = "home-monitor"
+name = "Monitor exclusion"
+role = "monitor"
+shape = "circle"
+latitude = 40.0
+longitude = -105.0
+radius_m = 100.0

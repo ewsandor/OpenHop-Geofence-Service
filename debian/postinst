@@ -1,0 +1,26 @@
+#!/bin/sh
+# Create the service account and directories; install the example
+# configuration only if none exists. Never enables or starts the service.
+set -e
+
+NAME=openhop-geofence
+CONF_DIR=/etc/$NAME
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd "$NAME" >/dev/null; then
+        adduser --system --group --home "/var/lib/$NAME" --no-create-home \
+            --gecos "OpenHop geofence service" "$NAME"
+    fi
+    # Sticky, group-writable directory: the service can atomically replace
+    # config.toml (which it owns) for web edits but not root-owned files.
+    install -d -m 1770 -o root -g "$NAME" "$CONF_DIR"
+    install -d -m 0750 -o root -g "$NAME" "$CONF_DIR/secrets"
+    if [ ! -e "$CONF_DIR/config.toml" ]; then
+        install -m 0640 -o "$NAME" -g "$NAME" \
+            /usr/share/$NAME/config.toml.example "$CONF_DIR/config.toml"
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0

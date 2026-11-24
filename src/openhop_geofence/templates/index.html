@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHop Geofence — {{ hostname }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <h1>OpenHop Geofence <small>{{ hostname }} · v{{ version }}</small></h1>
+  <div id="who" hidden><span id="who-name"></span> <button id="logout" class="link">Log out</button></div>
+</header>
+
+<main>
+  <section id="login-view" class="card narrow" hidden>
+    <h2>Log in</h2>
+    <form id="login-form">
+      <label>User <input name="username" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Log in</button>
+      <p class="error" id="login-error"></p>
+    </form>
+  </section>
+
+  <div id="app-view" hidden>
+    <p id="banner" class="banner" hidden></p>
+    <p id="message" class="message" hidden></p>
+
+    <section class="card">
+      <h2>Mode</h2>
+      <div class="mode-row">
+        <span id="mode-badge" class="badge">—</span>
+        <span id="mode-detail"></span>
+      </div>
+      <dl id="mode-list" class="grid"></dl>
+      <div class="actions">
+        <button data-action="force_repeat">Force Repeat</button>
+        <button data-action="force_monitor">Force Monitor</button>
+        <button data-action="disable_tx" class="danger">Disable all TX</button>
+        <button data-action="resume" class="primary">Resume automatic</button>
+        <button data-action="clear">Clear safe mode</button>
+        <button data-action="reload">Reload config</button>
+      </div>
+    </section>
+
+    <div class="columns">
+      <section class="card"><h2>OpenHop</h2><dl id="openhop-list" class="grid"></dl></section>
+      <section class="card"><h2>GPS and zones</h2><dl id="gps-list" class="grid"></dl></section>
+      <section class="card"><h2>MeshMapper</h2><dl id="mm-list" class="grid"></dl></section>
+      <section class="card"><h2>Companion</h2><dl id="comp-list" class="grid"></dl></section>
+    </div>
+
+    <section class="card" id="map-card" hidden>
+      <h2>Map</h2>
+      <p id="map-notice" class="notice" hidden></p>
+      <div id="map"></div>
+      <div class="legend">
+        <span class="sw forward"></span>Repeat (forward)
+        <span class="sw monitor"></span>Monitor
+        <span class="sw no_tx"></span>No TX
+        <span class="sw unknown"></span>Unknown
+        <label><input type="checkbox" id="show-trace"> Trace</label>
+        <label><input type="checkbox" id="show-coverage" checked> Coverage</label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Zones</h2>
+      <p class="hint">Monitor zones take priority over repeat zones. Click the map to set a circle center.</p>
+      <table id="zone-table"><thead><tr><th>ID</th><th>Name</th><th>Role</th><th>Shape</th><th></th></tr></thead><tbody></tbody></table>
+      <form id="zone-form">
+        <input type="hidden" name="index" value="">
+        <div class="fields">
+          <label>ID <input name="id" required pattern="[A-Za-z0-9._-]{1,64}"></label>
+          <label>Name <input name="name" maxlength="100"></label>
+          <label>Role <select name="role"><option value="monitor">monitor</option><option value="repeat">repeat</option></select></label>
+          <label>Shape <select name="shape"><option value="circle">circle</option><option value="geojson">polygon (advanced)</option></select></label>
+          <label class="circle">Latitude <input name="latitude" type="number" step="any"></label>
+          <label class="circle">Longitude <input name="longitude" type="number" step="any"></label>
+          <label class="circle">Radius (m) <input name="radius_m" type="number" step="any" min="1" max="100000"></label>
+          <label class="polygon wide" hidden>GeoJSON geometry (Polygon or MultiPolygon, [lon, lat])
+            <textarea name="geometry" rows="4" spellcheck="false"></textarea></label>
+        </div>
+        <div class="actions">
+          <button type="submit">Apply to list</button>
+          <button type="button" id="zone-reset">New zone</button>
+          <button type="button" id="zones-save" class="primary">Save zones</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card" id="trace-card">
+      <h2>Diagnostic trace</h2>
+      <dl id="trace-list" class="grid"></dl>
+      <div class="actions">
+        <button id="trace-start">Start</button>
+        <button id="trace-stop">Stop</button>
+        <button id="trace-clear" class="danger">Clear</button>
+        <a id="trace-export" class="button" href="api/trace/export">Download ZIP</a>
+      </div>
+      <p class="hint">Location history is sensitive. Convert exports offline with <code>openhop-geofence-trace</code>.</p>
+    </section>
+
+    <section class="card">
+      <h2>Configuration</h2>
+      <dl id="config-list" class="grid"></dl>
+      <details id="config-details">
+        <summary>Edit configuration file</summary>
+        <textarea id="config-text" rows="20" spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="config-load">Reload from file</button>
+          <button id="config-save" class="primary">Validate and save</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="card" id="admin-card" hidden>
+      <h2>Administration</h2>
+      <div class="actions">
+        <button id="restart">Restart service</button>
+        <button id="reboot" class="danger">Reboot host</button>
+      </div>
+    </section>
+  </div>
+</main>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

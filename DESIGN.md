@@ -498,7 +498,8 @@ Explicit zones always decide first, even when MeshMapper is down.
    documented units.
 3. Validate and store compact square bounds, type, measurement timestamp,
    and, when experimental thresholds are enabled, `snr` and `effective`.
-   Ignore visualization fields. Build a Shapely spatial index for local lookup.
+   Ignore visualization fields. Index squares in a standard-library grid of
+   buckets for local lookup; Shapely is used only for region-scope tests.
 4. Inside verified scope, classify the square containing the fix:
    - **Covered** (Monitor): dominant type is in `covered_types` and, if
      experimental thresholds are enabled, every configured threshold is met.
@@ -510,7 +511,8 @@ Explicit zones always decide first, even when MeshMapper is down.
 
 An explicit radio filter may override automatic matching. For multi-radio
 OpenHop instances, require the operator to select the radio used for coverage
-filters. Mode changes apply to the entire OpenHop instance. Multi-region keys
+filters (`meshmapper.radio_filter`); without it, MeshMapper reports a
+configuration fault and `policy.outside` applies. Mode changes apply to the entire OpenHop instance. Multi-region keys
 that do not support age or radio filters are unavailable for this integration;
 do not relax filters automatically.
 
@@ -567,13 +569,17 @@ configuration error.
 - A 304 does not rejuvenate old measurements or `generated_at`; validate
   against the cache's independent age limits.
 - Respect Retry-After and daily quota resets, and back off failed requests.
-  Never retry on a schedule that could trip the per-IP burst throttle; a
-  400 filter error is a configuration fault, not something to retry.
+  Never retry on a schedule that could trip the per-IP burst throttle.
+  Requests are at least 30 seconds apart; failure backoff is capped at
+  6 hours. A 400, 401, 403, or 404 response is a MeshMapper configuration
+  fault: it is reported and not retried until reload, and it does not latch
+  safe mode.
   No coverage request is triggered for each GPS fix or square crossing.
-- Request gzip; bound compressed and decompressed response sizes, row count,
-  and total stored bytes. Exceeding the budget means unavailable, not uncovered.
+- Request gzip; bound compressed (16 MiB) and decompressed (64 MiB) response
+  sizes, row count (100,000 squares), and total stored bytes. Exceeding the budget means unavailable, not uncovered.
 - While system time is untrusted (section 5), do not use persisted
-  age-sensitive coverage. Apply `policy.outside` until time is trusted.
+  age-sensitive coverage and do not send MeshMapper requests. Apply
+  `policy.outside` until time is trusted.
 
 ## 8. Configuration and Linux installation
 
@@ -701,8 +707,12 @@ editable through the web interface.
 The installer creates an unprivileged `openhop-geofence` account:
 
 - Root-owned executable/package and systemd unit.
-- A narrowly service-writable config directory when web editing is enabled;
-  otherwise administrator-managed config.
+- Config directory `/etc/openhop-geofence` mode 1770 `root:openhop-geofence`
+  (sticky): the service can atomically replace `config.toml`, which it owns
+  (0640), but cannot replace root-owned files. Atomic writes preserve the
+  replaced file's owner and group; new files take the directory's group.
+  `config.toml` is not a dpkg conffile or RPM-verified file, because the
+  service edits it; packages install it from the example only if absent.
 - Root-owned secrets directory, readable by the service group, not writable
   by the service. Files mode 0640, directory mode 0750.
 - Durable state (only the safe mode latch) under `/var/lib/openhop-geofence`.
@@ -765,7 +775,9 @@ comments and permissions, and reject stale edits with a conflict response.
 
 On SIGHUP or an explicit reload, validate the file and reset eligibility
 timers. Invalid active configuration raises a visible fault and latches safe
-mode. Changes to bind, authentication, or map-serving settings require a
+mode. An invalid configuration at startup latches safe mode, attempts
+`no_tx`, and exits with status 78, which the unit lists in
+`RestartPreventExitStatus=` so systemd does not restart it. Changes to bind, authentication, or map-serving settings require a
 service restart; report this when saving.
 
 ### Service restart and host reboot
@@ -777,7 +789,7 @@ and do not lift `no_tx` to complete maintenance or send a reply. Restart
 clears ordinary overrides and runs the normal startup checks.
 
 **Restart service** restarts only the geofence process. Under systemd, use a
-dedicated exit status listed in `RestartForceExitStatus=`; in standalone mode,
+dedicated exit status (75) listed in `RestartForceExitStatus=`; in standalone mode,
 re-execute the service with its original arguments after cleanup. The service
 does not need permission to manage other units.
 
@@ -786,7 +798,10 @@ geofence service, not a remote OpenHop or companion device. The local
 configuration setting `maintenance.allow_reboot` defaults to `false` and
 cannot be changed through either interface. When enabled, use the local OS
 reboot interface with narrowly scoped
-authorization (systemd-logind and polkit on Debian). Do not grant the service
+authorization (systemd-logind and polkit on Debian):
+`systemctl reboot --no-wall --no-ask-password`, authorized by the example
+polkit rule `packaging/50-openhop-geofence-reboot.rules`, which the
+operator installs manually. Do not grant the service
 root access or bypass shutdown inhibitors. If reboot is disabled, unsupported,
 or denied, report the reason and continue running. Acceptance means a request
 was scheduled, not that the service or host has returned.
@@ -820,8 +835,18 @@ authenticated administration interface. Reboot requires an explicit
 confirmation that identifies the local host.
 
 Use authenticated same-origin session cookies, password hashes via Werkzeug,
-CSRF protection for mutations, origin and host checks, bounded request bodies,
-and bounded login attempts. Require authentication on localhost. Use POST for
+CSRF protection for mutations (`X-CSRF-Token` header), origin and host checks, bounded request bodies,
+and bounded login attempts. Require authentication on localhost.
+Accounts are stored one per line as `user:role:hash` in the root-managed
+`web.auth_file`, created with `openhop-geofence passwd USER [--role
+admin|operator]`. Both roles may use mode controls, export traces, and edit
+configuration; endpoints, secret paths, the `[web]` section, and companion
+authorization require an administrator, and maintenance requests require an
+administrator. `[maintenance]` and disk-trace storage settings can be changed
+only by editing the file locally.
+The cookie signing key is generated in memory at startup. The raw
+configuration editor returns 409 Conflict on a revision mismatch; zone edits
+are applied to the TOML document with tomlkit. Use POST for
 mode, configuration, and maintenance actions. Do not expose upstream tokens,
 arbitrary file paths, or proxy requests. Restrict changes to API endpoints,
 secret paths, companion authorization, and administrator keys to
@@ -848,6 +873,11 @@ When maps are enabled:
 - Serve Leaflet from the OS-installed `libjs-leaflet` (or configured
   `leaflet_dir`), never from a runtime CDN and never copied into this
   project. If it is missing, show an install hint; forms still work.
+  Fedora does not package Leaflet; the operator downloads it and sets
+  `web.leaflet_dir`.
+- The tile URL and attribution are configurable (`web.tile_url`,
+  `web.tile_attribution`). Current coverage squares near the position are
+  served by `/api/coverage`.
 - Use attributed OpenStreetMap-compatible tiles from a configurable provider
   permitted for this use; follow its tile policy and display attribution.
 - Do not bulk-download public tiles or promise offline basemaps.
@@ -1102,23 +1132,34 @@ CLAUDE.md
 src/openhop_geofence/
     __init__.py
     __main__.py
-    cli.py
-    config.py
-    controller.py
+    cli.py              entry point, signals, exit codes, passwd
+    config.py           TOML loading and validation
+    policy.py           decision priority and hysteresis (pure functions)
+    controller.py       control loop, commands, safe mode, status
     zones.py
     gpsd.py
     openhop.py
     meshmapper.py
+    state.py            atomic writes and persisted latches
+    system.py           sd_notify, clock synchronization, reboot request
     companion.py
     web.py
+    trace.py            diagnostic recorder
+    trace_convert.py    offline GeoJSON converter (openhop-geofence-trace)
     templates/
     static/
-tests/
+tests/                  unittest suite with fake servers (tests/fakes.py)
 config/config.toml.example
 packaging/openhop-geofence.service
 packaging/install-systemd.sh
+packaging/check-version.sh
+packaging/50-openhop-geofence-reboot.rules   example polkit rule
+packaging/gpsd-nmea-bridge.service           example gpsd-to-OpenHop bridge
+packaging/fedora/                            RPM spec and sysusers.d file
 debian/
-.github/workflows/ci.yml
+.github/workflows/ci.yml        pull-request checks and package builds
+.github/workflows/release.yml   tagged releases
+.github/scripts/                container build and smoke-test scripts
 ```
 
 Organize modules by responsibility. Use type annotations and docstrings for
@@ -1196,8 +1237,13 @@ Each tagged release publishes:
   `sudo apt install ./openhop-geofence_<version>_all.deb` to install the
   package and dependencies together. `apt` installs recommended packages by
   default; `--no-install-recommends` omits optional features.
+- `openhop-geofence-<version>-1.fc<N>.noarch.rpm`: Fedora package built on
+  the current Fedora release, with a sysusers.d account and the same unit.
+  It depends on that release's Python version; other RPM distributions can
+  rebuild the included source RPM or use the wheel.
 - Portable project files: source tarball (sdist) and wheel for pip/pipx or
-  manual installs on non-Debian distributions, plus `install-systemd.sh`.
+  manual installs on non-Debian distributions. The sdist includes
+  `install-systemd.sh`, the unit, and the example configuration.
 - `SHA256SUMS` for all artifacts.
 
 Declare Debian dependencies from distribution repositories; do not bundle
@@ -1237,6 +1283,19 @@ GitHub Actions:
   checking imports, console entry points, Shapely loading, and unit syntax.
 - Pin third-party actions to reviewed commits and use minimum permissions.
 - Publish release artifacts only from approved tags.
+
+Release process:
+
+1. Update `__version__` in `src/openhop_geofence/__init__.py` (the single
+   source for Python metadata), add a `debian/changelog` entry
+   (`dch -v X.Y.Z`), and update `Version:` and `%changelog` in the RPM spec.
+   `packaging/check-version.sh` fails CI on any mismatch.
+2. Merge to `main`, then push an annotated tag `vX.Y.Z`.
+3. `release.yml` checks the tag against the version, runs the full CI
+   workflow, and attaches the sdist, wheel, `.deb`, `.rpm`, source RPM, and
+   `SHA256SUMS` to a GitHub Release with generated notes.
+
+`ci.yml` runs on pull requests and is intended as a required status check.
 
 Install Shapely's native GEOS and NumPy dependencies from the distribution.
 Verify availability on armhf; do not require building GEOS or NumPy on a
@@ -1399,3 +1458,46 @@ Validation targets on a Pi Zero 2W:
    last-gasp handling.
 6. Add Debian packaging, systemd installation, supporting-service guidance,
    documentation, and architecture tests.
+
+## 14. Implementation notes
+
+Values and behaviors fixed during implementation (version 0.1.0). These
+refine the sections above; hardware validation (section 12) is still pending.
+
+Control loop:
+
+- The controller evaluates once per second and polls OpenHop every 5 seconds,
+  reading the mode again before every write.
+- An external mode change is detected only while the OpenHop connection is
+  continuous; after a reconnect, the observed mode is accepted as the new
+  baseline. A detected conflict latches safe mode and requests `no_tx` on the
+  next evaluation.
+- Three consecutive OpenHop authentication or protocol errors are a fault.
+  Timeouts and connection errors are reported as unavailable without latching
+  safe mode.
+- `policy.outside = "last"` holds the last confirmed decision, never a
+  requested mode.
+- Web and companion commands return after the controller's immediate
+  evaluation, so the reply reflects the resulting status.
+
+Companion:
+
+- Last gasp: at most 3 submissions in total, round-robin across report
+  channels, with text clipped to 140 characters.
+- After `clear`, the confirmation reply waits up to 15 seconds for `no_tx`
+  to be released.
+- Message deduplication uses the sender prefix, sender timestamp, and text.
+  Messages timestamped more than 30 seconds before service start are
+  rejected.
+
+Process and packaging:
+
+- Exit status 75 requests a restart (standalone mode re-executes itself);
+  78 is an invalid configuration at startup.
+- The unit omits `MemoryDenyWriteExecute=`, which can break ctypes and libffi
+  callbacks. Serial companions need a drop-in that disables
+  `PrivateDevices=` and adds the `dialout` group.
+- The Debian package depends on `procps` for the unit's `ExecReload`
+  (`kill -HUP`) and installs the unit disabled (`dh_installsystemd
+  --no-enable`). Upgrades restart the service only if it is enabled.
+- The project is packaged as a Debian native package (`3.0 (native)`).

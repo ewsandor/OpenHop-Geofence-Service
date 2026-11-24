@@ -1,0 +1,146 @@
+# Sanity checks and package builds. Runs on pull requests and pushes to main,
+# and is reused by release.yml so releases publish exactly what CI tested.
+# Never contacts a live repeater or the MeshMapper API.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python }}${{ matrix.minimal && ', minimal' || '' }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        minimal: [false]
+        include:
+          # Standard library only: optional features must degrade cleanly.
+          - python: "3.13"
+            minimal: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install optional dependencies
+        if: ${{ !matrix.minimal }}
+        run: pip install shapely flask waitress tomlkit
+      - name: Version consistency
+        run: sh packaging/check-version.sh
+      - name: Byte-compile
+        run: python -m compileall -q src tests
+      - name: Unit tests
+        run: PYTHONPATH=src:tests python -W error::ResourceWarning -m unittest discover -s tests -v
+      - name: Example configuration
+        if: ${{ !matrix.minimal }}
+        run: PYTHONPATH=src python -m openhop_geofence --check-config --config config/config.toml.example
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check --select F,E9,B src/ tests/
+
+  python-dist:
+    name: Build sdist and wheel
+    needs: [test, lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install build
+      - run: python -m build
+      - name: Install wheel and run
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/openhop-geofence --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-dist
+          path: dist/*
+          if-no-files-found: error
+
+  deb:
+    name: Build .deb (Debian Trixie)
+    needs: [test, lint]
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sh .github/scripts/build-deb.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  rpm:
+    name: Build .rpm (Fedora)
+    needs: python-dist
+    runs-on: ubuntu-24.04
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-dist
+          path: dist
+      - run: sh .github/scripts/build-rpm.sh
+      - name: Install smoke test
+        run: |
+          dnf -y -q install dist/*.noarch.rpm
+          openhop-geofence --version
+          su -s /bin/sh -c 'openhop-geofence --check-config' openhop-geofence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  deb-smoke:
+    name: Install .deb (${{ matrix.release }}, ${{ matrix.platform }})
+    needs: deb
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [bookworm, trixie]
+        platform: [linux/amd64, linux/arm64, linux/arm/v7]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          # armhf is emulated; GitHub's arm64 runners cannot execute 32-bit code.
+          - platform: linux/arm/v7
+            runner: ubuntu-24.04
+            qemu: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deb
+          path: dist
+      - if: ${{ matrix.qemu }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm
+      - name: Install and check
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} -v "$PWD:/src" -w /src \
+            debian:${{ matrix.release }} sh .github/scripts/smoke-deb.sh dist/*.deb
