@@ -19,6 +19,17 @@ from typing import Any
 SAFE_MODE_FILE = "safe-mode.json"
 
 
+def managed_secret_path(config_path: str | Path, path: str | None) -> Path:
+    """Resolve a configured secret directly inside the managed secrets directory."""
+    if not path:
+        raise ValueError("the secret file path is not configured")
+    target = Path(path)
+    directory = (Path(config_path).parent / "secrets").resolve()
+    if not target.is_absolute() or target.parent.resolve() != directory or target.is_symlink():
+        raise ValueError("secret file must be a non-symlink directly inside the managed secrets directory")
+    return target
+
+
 def atomic_write(path: str | Path, data: bytes, mode: int | None = None, fsync: bool = True) -> None:
     """Atomically replace ``path`` with ``data``.
 

@@ -229,17 +229,17 @@ class SafeModeTests(ControllerTestCase):
         self.tick(30, 2)
         self.assertEqual(self.oh.mode, "monitor")  # Monitor first after reconnect.
 
-    def test_last_gasp_grace_delays_no_tx(self):
+    def test_announce_failure_grace_delays_no_tx(self):
         sent = []
 
         class Gasp:
-            def last_gasp_ready(self):
+            def announce_failure_ready(self):
                 return True
 
-            def send_last_gasp(self, text):
+            def send_announce_failure(self, text):
                 sent.append(text)
 
-        self.c.last_gasp = Gasp()
+        self.c.announce_failure = Gasp()
         self.at(OUTSIDE)
         self.c.step()
         self.oh.mode = "forward"
@@ -251,13 +251,13 @@ class SafeModeTests(ControllerTestCase):
 
     def test_disable_tx_cancels_grace(self):
         class Gasp:
-            def last_gasp_ready(self):
+            def announce_failure_ready(self):
                 return True
 
-            def send_last_gasp(self, text):
+            def send_announce_failure(self, text):
                 pass
 
-        self.c.last_gasp = Gasp()
+        self.c.announce_failure = Gasp()
         self.at(OUTSIDE)
         self.c.step()
         self.oh.mode = "forward"
@@ -272,9 +272,9 @@ class ConfigCommandTests(ControllerTestCase):
         rev = config.config_revision(text)
         with self.assertRaisesRegex(CommandError, "conflict"):
             self.do("save_config", text=text, revision="stale", role="admin")
-        with self.assertRaisesRegex(CommandError, "locally"):
+        with self.assertRaisesRegex(CommandError, "administrator"):
             self.do("save_config", text=text.replace("allow_reboot = false", "allow_reboot = true"),
-                    revision=rev, role="admin")
+                    revision=rev, role="operator")
         with self.assertRaisesRegex(CommandError, "administrator"):
             self.do("save_config", text=text + '\n[openhop]\nbase_url = "http://10.0.0.1:8000"\n',
                     revision=rev, role="operator")
@@ -284,6 +284,56 @@ class ConfigCommandTests(ControllerTestCase):
         new = text.replace('outside = "monitor"', 'outside = "repeat"')
         self.assertIn("applied", self.do("save_config", text=new, revision=rev, role="operator"))
         self.assertEqual(self.c.cfg.policy.outside, "repeat")
+        rev = config.config_revision(new)
+        self.assertIn("applied", self.do("save_config", text=new.replace("allow_reboot = false", "allow_reboot = true"),
+                                         revision=rev, role="admin"))
+        self.assertTrue(self.c.cfg.maintenance.allow_reboot)
+
+    def test_managed_secret_update_and_invalid_paths(self):
+        directory = self.path.parent / "secrets"
+        directory.mkdir()
+        secret = directory / "openhop.key"
+        text = self.path.read_text() + f'\n[openhop]\napi_key_file = "{secret}"\n'
+        self.path.write_text(text)
+        self.c.cfg = config.load_config(self.path)
+        self.c._connected = True
+        loaded_keys = []
+        self.c._make_openhop = lambda cfg: loaded_keys.append(config.read_secret(cfg.openhop.api_key_file)) or self.oh
+        self.assertIn("saved and applied", self.do("update_secret", kind="openhop", value="api-key"))
+        self.assertEqual(secret.read_text(), "api-key\n")
+        self.assertEqual(secret.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(loaded_keys, ["api-key"])
+        self.assertFalse(self.c._connected)
+        with self.assertRaises(CommandError):
+            self.do("update_secret", kind="openhop", value="bad\nkey")
+        self.assertEqual(secret.read_text(), "api-key\n")
+        secret.unlink()
+        outside = self.path.parent / "outside"
+        secret.symlink_to(outside)
+        with self.assertRaisesRegex(CommandError, "non-symlink"):
+            self.do("update_secret", kind="openhop", value="other-key")
+        self.assertFalse(outside.exists())
+
+    def test_meshmapper_secret_replaces_worker(self):
+        directory = self.path.parent / "secrets"
+        directory.mkdir()
+        key = directory / "meshmapper.key"
+        text = self.path.read_text() + f'\n[meshmapper]\napi_key_file = "{key}"\n'
+        self.path.write_text(text)
+        self.c.cfg = config.load_config(self.path)
+        calls = []
+
+        class Worker:
+            def stop(self):
+                calls.append("stopped")
+
+            def start(self):
+                calls.append("started")
+
+        self.c.meshmapper = Worker()
+        self.c._make_meshmapper = lambda cfg: calls.append(config.read_secret(cfg.meshmapper.api_key_file)) or Worker()
+        self.do("update_secret", kind="meshmapper", value="new-key")
+        self.assertEqual(calls, ["stopped", "new-key", "started"])
 
     def test_invalid_reload_latches_safe_mode(self):
         self.path.write_text("[policy]\noutside = 'bogus'\n")
@@ -299,7 +349,7 @@ class MaintenanceTests(ControllerTestCase):
         with self.assertRaises(CommandError):
             self.do("restart")
 
-    def test_reboot_disabled_by_default(self):
+    def test_reboot_can_be_disabled(self):
         with self.assertRaisesRegex(CommandError, "disabled"):
             self.do("reboot")
         self.assertEqual(self.reboots, [])
@@ -313,6 +363,12 @@ class RebootEnabledTests(ControllerTestCase):
         self.assertIn("scheduled", self.do("reboot"))
         self.assertEqual(self.reboots, [1])
         self.assertTrue(self.store.latch.active)
+
+    def test_reboot_defaults_to_enabled(self):
+        self.path.write_text(self.path.read_text().replace("allow_reboot = true", ""))
+        self.c = self.make()
+        self.assertIn("scheduled", self.do("reboot"))
+        self.assertEqual(self.reboots, [1])
 
 
 if __name__ == "__main__":

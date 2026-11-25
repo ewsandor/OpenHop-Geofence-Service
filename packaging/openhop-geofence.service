@@ -1,8 +1,5 @@
 # systemd unit for the OpenHop geofence service (see DESIGN.md sections 5 and 8).
 #
-# Installed disabled. Review /etc/openhop-geofence/config.toml first, then:
-#   sudo systemctl enable --now openhop-geofence
-#
 # Override settings with "systemctl edit openhop-geofence" rather than editing
 # this file. A virtual environment interpreter (for the optional companion)
 # is configured by overriding ExecStart= in a drop-in; see README.md.
@@ -46,10 +43,9 @@ Environment=OPENBLAS_NUM_THREADS=1
 Environment=PYTHONUNBUFFERED=1
 
 # Filesystem protection. The configuration directory is writable for web
-# edits (atomic replace); secrets stay read-only to the service.
+# edits and restricted service-managed secrets.
 ProtectSystem=strict
 ReadWritePaths=/etc/openhop-geofence
-ReadOnlyPaths=-/etc/openhop-geofence/secrets
 # Uncomment for disk trace recording (diagnostics.storage = "disk"):
 #LogsDirectory=openhop-geofence
 ProtectHome=yes

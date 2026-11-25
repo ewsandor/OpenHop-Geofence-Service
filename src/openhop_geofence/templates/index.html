@@ -15,11 +15,35 @@
 <main>
   <section id="login-view" class="card narrow" hidden>
     <h2>Log in</h2>
+    <p id="login-notice" class="hint" hidden></p>
     <form id="login-form">
       <label>User <input name="username" autocomplete="username" required></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
       <button type="submit" class="primary">Log in</button>
       <p class="error" id="login-error"></p>
+    </form>
+  </section>
+
+  <section id="initial-setup-view" class="card narrow" hidden>
+    <h2>Set up administrator</h2>
+    <p>Create the password for the <strong>admin</strong> account. Anyone on this network can claim setup until it is complete.</p>
+    <form id="initial-setup-form">
+      <label>New password <input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+      <label>Confirm password <input name="confirm_password" type="password" autocomplete="new-password" required></label>
+      <button type="submit" class="primary">Create administrator</button>
+      <p class="error"></p>
+    </form>
+  </section>
+
+  <section id="setup-password-view" class="card narrow" hidden>
+    <h2>Change the default password</h2>
+    <p>The default password is publicly known. Change it before continuing.</p>
+    <form class="password-form">
+      <label>Current password <input name="current_password" type="password" autocomplete="current-password" required></label>
+      <label>New password <input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+      <label>Confirm new password <input name="confirm_password" type="password" autocomplete="new-password" required></label>
+      <button type="submit" class="primary">Change password</button>
+      <p class="error"></p>
     </form>
   </section>
 
@@ -117,6 +141,28 @@
 
     <section class="card" id="admin-card" hidden>
       <h2>Administration</h2>
+      <p class="hint">Credentials are write-only. HTTP does not encrypt them; use a trusted network.</p>
+      <form id="secret-form">
+        <div class="fields">
+          <label>Credential <select name="kind">
+            <option value="openhop">OpenHop API key</option>
+            <option value="meshmapper">MeshMapper API key</option>
+            <option value="companion_ble_pin">Companion BLE PIN</option>
+          </select></label>
+          <label>New value <input name="value" type="password" autocomplete="off" required></label>
+        </div>
+        <button type="submit">Save credential</button>
+      </form>
+      <details>
+        <summary>Change administrator password</summary>
+        <form class="password-form">
+          <label>Current password <input name="current_password" type="password" autocomplete="current-password" required></label>
+          <label>New password <input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+          <label>Confirm new password <input name="confirm_password" type="password" autocomplete="new-password" required></label>
+          <button type="submit">Change password</button>
+          <p class="error"></p>
+        </form>
+      </details>
       <div class="actions">
         <button id="restart">Restart service</button>
         <button id="reboot" class="danger">Reboot host</button>

@@ -93,12 +93,21 @@ function showLogin() {
   session = null;
   clearInterval(pollTimer); pollTimer = null;
   $("#login-view").hidden = false;
+  $("#initial-setup-view").hidden = true;
+  $("#setup-password-view").hidden = true;
   $("#app-view").hidden = true;
   $("#who").hidden = true;
 }
 
 function showApp() {
   $("#login-view").hidden = true;
+  $("#initial-setup-view").hidden = true;
+  $("#setup-password-view").hidden = !session.change_password_required;
+  if (session.change_password_required) {
+    $("#app-view").hidden = true;
+    $("#who").hidden = true;
+    return;
+  }
   $("#app-view").hidden = false;
   $("#who").hidden = false;
   $("#who-name").textContent = `${session.user} (${session.role})`;
@@ -126,6 +135,60 @@ $("#logout").addEventListener("click", async () => {
   showLogin();
 });
 
+$("#initial-setup-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target, error = form.querySelector(".error");
+  error.textContent = "";
+  if (form.new_password.value !== form.confirm_password.value) {
+    error.textContent = "Passwords do not match.";
+    return;
+  }
+  try {
+    await api("api/setup", { password: form.new_password.value });
+    form.reset();
+    showLogin();
+    $("#login-form").username.value = "admin";
+    $("#login-notice").textContent = "Administrator created. Log in.";
+    $("#login-notice").hidden = false;
+  } catch (e) {
+    error.textContent = e.message;
+  }
+});
+
+document.querySelectorAll(".password-form").forEach((form) => {
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const error = form.querySelector(".error");
+    error.textContent = "";
+    if (form.new_password.value !== form.confirm_password.value) {
+      error.textContent = "New passwords do not match.";
+      return;
+    }
+    try {
+      await api("api/password", { current_password: form.current_password.value, new_password: form.new_password.value });
+      form.reset();
+      showLogin();
+      $("#login-notice").textContent = "Password changed. Log in again.";
+      $("#login-notice").hidden = false;
+    } catch (e) {
+      error.textContent = e.message;
+    }
+  });
+});
+
+$("#secret-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  try {
+    const data = await api("api/secrets", { kind: form.kind.value, value: form.value.value });
+    form.value.value = "";
+    say(data.result);
+    refresh();
+  } catch (e) {
+    say(`Save credential: ${e.message}`, true);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Status polling (paused while the page is hidden)
 // ---------------------------------------------------------------------------
@@ -135,10 +198,10 @@ function startPolling() {
   refresh();
   pollTimer = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden && session) refresh(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && session && session.user) refresh(); });
 
 async function refresh() {
-  if (!session) return;
+  if (!session || !session.user) return;
   try {
     status = await api("api/status");
   } catch (e) {
@@ -240,7 +303,7 @@ function render(s) {
       ["Suppressed", cp.suppressed_messages || undefined],
       ["Identity", cp.identity_warning],
       ["Error", cp.error],
-      ["Last gasp", sm.last_gasp_seconds != null ? `${sm.last_gasp_seconds} s until no_tx` : undefined],
+      ["Failure announcement", sm.announce_failure_seconds != null ? `${sm.announce_failure_seconds} s until no_tx` : undefined],
     ]);
   }
 
@@ -554,6 +617,11 @@ $("#trace-clear").addEventListener("click", () => {
 (async () => {
   try {
     const d = await api("api/session");
-    if (d.user) { session = d; showApp(); } else showLogin();
+    if (d.user) { session = d; showApp(); }
+    else if (d.setup_required) {
+      session = d;
+      $("#initial-setup-view").hidden = false;
+      $("#login-view").hidden = true;
+    } else showLogin();
   } catch (e) { showLogin(); }
 })();

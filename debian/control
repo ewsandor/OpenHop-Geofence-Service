@@ -14,7 +14,7 @@ X-Python3-Version: >= 3.11
 
 Package: openhop-geofence
 Architecture: all
-Depends: ${python3:Depends}, ${misc:Depends}, adduser, procps,
+Depends: ${python3:Depends}, ${misc:Depends}, adduser, procps, polkitd,
          python3-shapely, python3-flask, python3-waitress,
          python3-tomlkit, libjs-leaflet
 Suggests: gpsd, gpsd-clients, python3-venv
@@ -24,5 +24,4 @@ Description: geofenced Repeat/Monitor control for an OpenHop MeshCore repeater
  Includes hysteresis, a safe mode latch, an optional web interface with a
  map, and an optional MeshCore companion for reports and commands.
  .
- The service is installed disabled. Review /etc/openhop-geofence/config.toml
- and enable it with "systemctl enable --now openhop-geofence".
+ A fresh installation starts in safe mode for browser commissioning.

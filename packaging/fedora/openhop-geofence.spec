@@ -21,6 +21,7 @@ BuildRequires:  python3-devel
 BuildRequires:  systemd-rpm-macros
 
 Requires:       python3 >= 3.11
+Requires:       polkit
 %{?sysusers_requires_compat}
 # Optional features; Leaflet (map) is not packaged in Fedora, see README.md.
 Recommends:     python3-shapely
@@ -52,10 +53,11 @@ and enable it with "systemctl enable --now openhop-geofence".
 %pyproject_install
 %pyproject_save_files openhop_geofence
 install -Dpm 0644 packaging/openhop-geofence.service %{buildroot}%{_unitdir}/openhop-geofence.service
+install -Dpm 0644 packaging/50-openhop-geofence-reboot.rules %{buildroot}%{_datadir}/polkit-1/rules.d/50-openhop-geofence-reboot.rules
 install -Dpm 0644 %{SOURCE1} %{buildroot}%{_sysusersdir}/openhop-geofence.conf
-install -dm 1770 %{buildroot}%{_sysconfdir}/openhop-geofence
-install -dm 0750 %{buildroot}%{_sysconfdir}/openhop-geofence/secrets
-install -pm 0640 config/config.toml.example %{buildroot}%{_sysconfdir}/openhop-geofence/config.toml
+install -dm 2775 %{buildroot}%{_sysconfdir}/openhop-geofence
+install -dm 2755 %{buildroot}%{_sysconfdir}/openhop-geofence/secrets
+install -pm 0664 config/config.toml.example %{buildroot}%{_sysconfdir}/openhop-geofence/config.toml
 install -Dpm 0644 config/config.toml.example %{buildroot}%{_datadir}/openhop-geofence/config.toml.example
 install -dm 0750 %{buildroot}%{_sharedstatedir}/openhop-geofence
 install -dm 0750 %{buildroot}%{_localstatedir}/cache/openhop-geofence
@@ -78,16 +80,17 @@ PYTHONPATH=%{buildroot}%{python3_sitelib}:tests PYTHONDONTWRITEBYTECODE=1 %{pyth
 %files -f %{pyproject_files}
 %license LICENSE
 %doc README.md DESIGN.md
-%doc packaging/50-openhop-geofence-reboot.rules packaging/gpsd-nmea-bridge.service
+%doc packaging/gpsd-nmea-bridge.service
 %{_bindir}/openhop-geofence
 %{_bindir}/openhop-geofence-trace
 %{_unitdir}/openhop-geofence.service
+%{_datadir}/polkit-1/rules.d/50-openhop-geofence-reboot.rules
 %{_sysusersdir}/openhop-geofence.conf
 %{_datadir}/openhop-geofence/
 # The service edits config.toml in place (web interface), so it owns the file.
-%dir %attr(1770,root,openhop-geofence) %{_sysconfdir}/openhop-geofence
-%dir %attr(0750,root,openhop-geofence) %{_sysconfdir}/openhop-geofence/secrets
-%config(noreplace) %attr(0640,openhop-geofence,openhop-geofence) %{_sysconfdir}/openhop-geofence/config.toml
+%dir %attr(2775,root,openhop-geofence) %{_sysconfdir}/openhop-geofence
+%dir %attr(2755,openhop-geofence,openhop-geofence) %{_sysconfdir}/openhop-geofence/secrets
+%config(noreplace) %attr(0664,openhop-geofence,openhop-geofence) %{_sysconfdir}/openhop-geofence/config.toml
 %dir %attr(0750,openhop-geofence,openhop-geofence) %{_sharedstatedir}/openhop-geofence
 %dir %attr(0750,openhop-geofence,openhop-geofence) %{_localstatedir}/cache/openhop-geofence
 

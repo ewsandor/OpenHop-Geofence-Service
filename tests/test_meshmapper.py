@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,7 +12,9 @@ from fakes import FakeClock
 from openhop_geofence import config, policy
 from openhop_geofence.meshmapper import (
     ACCOUNTING_FILE,
+    MeshMapperError,
     MeshMapperWorker,
+    _SameOriginRedirect,
     normalize_timestamp,
     parse_boundaries,
     parse_coverage,
@@ -47,11 +50,20 @@ class FakeApi:
         self.squares = squares
         self.calls = []
         self.coverage_status = 200
+        self.directory = {"country": "US", "zones": [
+            {"code": "TST", "url": "https://test.meshmapper.net/"},
+            {"code": "TWO", "url": "https://two.meshmapper.net/"},
+        ]}
 
     def __call__(self, url, key, etag=None):
         self.calls.append((url, etag))
+        if "get_zones" in url:
+            return 200, json.dumps(self.directory).encode(), {}
         if "get_geojson" in url:
-            return 200, json.dumps(BOUNDARY).encode(), {}
+            boundary = json.loads(json.dumps(BOUNDARY))
+            if "two.meshmapper.net" in url:
+                boundary["features"][0]["properties"]["code"] = "TWO"
+            return 200, json.dumps(boundary).encode(), {}
         if self.coverage_status != 200:
             return self.coverage_status, json.dumps({"error": "rate_limited"}).encode(), {}
         if etag:
@@ -91,6 +103,12 @@ class ParsingTests(unittest.TestCase):
             parse_boundaries({"type": "FeatureCollection",
                               "features": [{"properties": {"code": "X"}, "geometry": None}]})
 
+    def test_authenticated_redirect_cannot_leave_origin(self):
+        handler = _SameOriginRedirect()
+        req = urllib.request.Request("https://meshmapper.net/get_zones.php")
+        with self.assertRaises(MeshMapperError):
+            handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example/")
+
 
 @unittest.skipUnless(HAVE_SHAPELY, "Shapely not installed")
 class WorkerTests(unittest.TestCase):
@@ -103,7 +121,7 @@ class WorkerTests(unittest.TestCase):
         self.trusted = True
         self.cfg = config.MeshMapperConfig(
             enabled=True, api_key_file=str(self.dir / "key"),
-            region_urls=["https://test.meshmapper.example/"],
+            country="US", regions=["TST"],
         )
         now = self.clock.wall()
         self.api = FakeApi(self.clock, [
@@ -117,9 +135,14 @@ class WorkerTests(unittest.TestCase):
         return MeshMapperWorker(cfg or self.cfg, self.dir / "cache", self.runtime, lambda: RADIO,
                                 lambda: self.trusted, wall_clock=self.clock.wall, http_get=self.api)
 
+    def initial_refresh(self, worker, regions=1):
+        for _ in range(regions + 2):
+            worker.refresh_once()
+            self.clock.advance(60)
+
     def test_lookup_classes_and_scope(self):
         w = self.worker()
-        w.refresh_once()
+        self.initial_refresh(w)
         self.assertEqual(w.lookup(40.001, -104.998), policy.CoverageResult(True, policy.COVERED, "BIDIR", "covered"))
         self.assertEqual(w.lookup(40.011, -104.998).classification, policy.UNCOVERED)
         self.assertEqual(w.lookup(40.021, -104.998).classification, policy.UNCOVERED)  # older than 14 days
@@ -131,19 +154,19 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("f_days=14", self.api.calls[-1][0])
 
     def test_experimental_thresholds(self):
-        exp = replace(self.cfg.experimental, weak_coverage_thresholds=True, min_snr_db=-10.0)
-        w = self.worker(replace(self.cfg, experimental=exp))
-        w.refresh_once()
+        exp = replace(self.cfg, weak_coverage_thresholds=True, min_snr_db=-10.0)
+        w = self.worker(exp)
+        self.initial_refresh(w)
         self.assertEqual(w.lookup(40.001, -104.998).classification, policy.WEAK)
         # Thresholds are ignored while the experimental switch is off.
-        off = replace(self.cfg.experimental, weak_coverage_thresholds=False, min_snr_db=-10.0)
-        w = self.worker(replace(self.cfg, experimental=off))
+        off = replace(self.cfg, weak_coverage_thresholds=False, min_snr_db=-10.0)
+        w = self.worker(off)
         w._load_snapshot()
         self.assertEqual(w.lookup(40.001, -104.998).classification, policy.COVERED)
 
     def test_snapshot_reused_after_restart_without_refetch(self):
         w = self.worker()
-        w.refresh_once()
+        self.initial_refresh(w)
         calls = len(self.api.calls)
         snapshot = (self.dir / "cache" / "coverage.json.gz").stat().st_mtime_ns
         self.clock.advance(120)
@@ -154,9 +177,17 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(w2.lookup(40.001, -104.998).available)
         self.assertEqual((self.dir / "cache" / "coverage.json.gz").stat().st_mtime_ns, snapshot)
 
+    def test_snapshot_scope_includes_country_and_regions(self):
+        w = self.worker()
+        self.initial_refresh(w)
+        for cfg in (replace(self.cfg, country="CA"), replace(self.cfg, regions=["TWO"])):
+            other = self.worker(cfg)
+            other._load_snapshot()
+            self.assertFalse(other.lookup(40.001, -104.998).available)
+
     def test_offline_cache_expires(self):
         w = self.worker()
-        w.refresh_once()
+        self.initial_refresh(w)
         self.clock.advance(self.cfg.max_cache_age_seconds + 1)
         self.api.coverage_status = 503
         w.refresh_once()
@@ -171,7 +202,8 @@ class WorkerTests(unittest.TestCase):
 
     def test_backoff_survives_worker_restart(self):
         self.api.coverage_status = 429
-        self.worker().refresh_once()
+        w = self.worker()
+        self.initial_refresh(w)
         calls = len(self.api.calls)
         self.clock.advance(60)
         self.worker().refresh_once()  # Fresh worker shares the runtime accounting.
@@ -181,14 +213,14 @@ class WorkerTests(unittest.TestCase):
 
     def test_daily_budget(self):
         w = self.worker(replace(self.cfg, daily_request_budget=2, refresh_seconds=900))
-        w.refresh_once()  # boundary + coverage
+        self.initial_refresh(w)
         self.clock.advance(1000)
-        w.refresh_once()
+        self.initial_refresh(w)
         self.assertEqual(len(self.api.calls), 2)
 
     def test_not_modified_keeps_generated_at(self):
         w = self.worker(replace(self.cfg, refresh_seconds=900))
-        w.refresh_once()
+        self.initial_refresh(w)
         generated = w.status().generated_at
         self.clock.advance(1000)
         w.refresh_once()
@@ -200,10 +232,10 @@ class WorkerTests(unittest.TestCase):
     def test_client_error_is_configuration_fault(self):
         self.api.coverage_status = 400
         w = self.worker()
-        w.refresh_once()
+        self.initial_refresh(w)
         self.clock.advance(100_000)
         w.refresh_once()
-        self.assertEqual(len(self.api.calls), 2)  # No retry until reload.
+        self.assertEqual(len(self.api.calls), 3)  # No retry until reload.
         self.assertFalse(w.status().available)
 
     def test_multi_radio_requires_explicit_filter(self):
@@ -213,6 +245,62 @@ class WorkerTests(unittest.TestCase):
         w.refresh_once()
         self.assertEqual(self.api.calls, [])
         self.assertIn("multi-radio", w.status().reason)
+
+    def test_multiple_regions_and_per_request_spacing(self):
+        w = self.worker(replace(self.cfg, regions=["TST", "TWO"]))
+        w.refresh_once()
+        w.refresh_once()
+        self.assertEqual(len(self.api.calls), 1)
+        for _ in range(3):
+            self.clock.advance(60)
+            w.refresh_once()
+        self.assertEqual(len(self.api.calls), 4)
+        self.assertIn("country=US", self.api.calls[0][0])
+        self.assertTrue(w.lookup(40.001, -104.998).available)
+
+    def test_directory_missing_region_or_untrusted_url(self):
+        for index, directory in enumerate((
+            {"country": "US", "zones": []},
+            {"country": "US", "zones": [{"code": "TST", "url": "https://evil.example/"}]},
+            {"country": "US", "zones": [{"code": "TST", "url": "https://[invalid/"}]},
+        )):
+            with self.subTest(directory=directory):
+                self.api.directory = directory
+                self.clock.advance(60)
+                w = self.worker()
+                w.runtime = RuntimeDir(self.dir / f"run-{index}")
+                w.refresh_once()
+                self.assertFalse(w.lookup(40, -105).available)
+                self.assertIsNotNone(w.status().last_error)
+
+    def test_boundary_must_match_requested_region(self):
+        self.api.directory["zones"][0]["url"] = "https://two.meshmapper.net/"
+        w = self.worker()
+        self.initial_refresh(w)
+        self.assertFalse(w.lookup(40, -105).available)
+        self.assertIn("matching region", w.status().last_error)
+
+    def test_revoked_region_stops_using_cached_coverage(self):
+        w = self.worker()
+        self.initial_refresh(w)
+        self.api.directory["zones"] = []
+        self.clock.advance(self.cfg.boundary_refresh_seconds)
+        w.refresh_once()
+        self.assertIn("not authorized", w.status().last_error)
+        self.assertFalse(w.lookup(40.001, -104.998).available)
+
+    def test_completed_boundary_refresh_does_not_need_extra_budget(self):
+        w = self.worker(replace(self.cfg, daily_request_budget=5, refresh_seconds=100_000,
+                                max_cache_age_seconds=200_000, boundary_refresh_seconds=3600))
+        self.initial_refresh(w)
+        previous = w._dataset.boundaries_fetched_at
+        self.clock.advance(3600)
+        w.refresh_once()
+        self.clock.advance(60)
+        w.refresh_once()
+        w.refresh_once()
+        self.assertGreater(w._dataset.boundaries_fetched_at, previous)
+        self.assertEqual(len(self.api.calls), 5)
 
 
 if __name__ == "__main__":

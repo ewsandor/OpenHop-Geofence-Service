@@ -106,7 +106,7 @@ def check_config(path: str) -> int:
 
 
 def passwd(args: argparse.Namespace) -> int:
-    from .web import set_password
+    from .web import close_initial_setup, set_password
 
     auth_file = args.auth_file
     if not auth_file:
@@ -123,6 +123,12 @@ def passwd(args: argparse.Namespace) -> int:
         print("passwords do not match", file=sys.stderr)
         return 1
     try:
+        try:
+            configured_auth = config_mod.load_config(args.config).web.auth_file
+        except (OSError, ConfigError):
+            configured_auth = None
+        if configured_auth and Path(auth_file).absolute() == Path(configured_auth).absolute():
+            close_initial_setup(Path(args.state_dir))
         set_password(auth_file, args.user, args.role, pw1)
     except (OSError, ValueError) as exc:
         print(f"cannot update {auth_file}: {exc}", file=sys.stderr)
@@ -247,7 +253,7 @@ def run_service(args: argparse.Namespace) -> int:
             controller.status_providers["companion"] = lambda: {"enabled": True, "error": "meshcore not installed"}
         else:
             controller.listeners.append(companion)
-            controller.last_gasp = companion
+            controller.announce_failure = companion
             controller.status_providers["companion"] = companion.status
             companion.start()
 
@@ -261,7 +267,7 @@ def run_service(args: argparse.Namespace) -> int:
         else:
             if warn := ensure_auth_file_warning(cfg.web.auth_file):
                 log.warning(warn)
-            web = WebServer(create_app(controller, trace=trace), cfg.web.bind, cfg.web.port)
+            web = WebServer(create_app(controller, trace=trace, setup_dir=Path(args.state_dir)), cfg.web.bind, cfg.web.port)
             if not web.start():
                 why = web.error
         # Shown by the CLI status and logs; the browser cannot see a dead server.

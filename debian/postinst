@@ -1,5 +1,5 @@
 #!/bin/sh
-# Create the service account and directories. Never enables the service.
+# Create the service account and directories before the unit starts.
 set -e
 
 NAME=openhop-geofence
@@ -10,12 +10,28 @@ if [ "$1" = "configure" ]; then
         adduser --system --group --home "/var/lib/$NAME" --no-create-home \
             --gecos "OpenHop geofence service" "$NAME"
     fi
-    # Sticky, group-writable directory: the service can atomically replace
-    # config.toml (which it owns) for web edits but not root-owned files.
-    install -d -m 1770 -o root -g "$NAME" "$CONF_DIR"
-    install -d -m 0750 -o root -g "$NAME" "$CONF_DIR/secrets"
+    install -d -m 2775 -o root -g "$NAME" "$CONF_DIR"
+    install -d -m 2755 -o "$NAME" -g "$NAME" "$CONF_DIR/secrets"
     if [ -e "$CONF_DIR/config.toml" ] || [ -L "$CONF_DIR/config.toml" ]; then
         chown -h "$NAME:$NAME" "$CONF_DIR/config.toml"
+        if [ ! -L "$CONF_DIR/config.toml" ]; then
+            chmod 0664 "$CONF_DIR/config.toml"
+        else
+            echo "Warning: check permissions on the config.toml symlink target manually." >&2
+        fi
+    fi
+    if [ -z "${2:-}" ]; then
+        install -d -m 0750 -o "$NAME" -g "$NAME" "/var/lib/$NAME"
+        if [ ! -e "/var/lib/$NAME/safe-mode.json" ] && [ ! -L "/var/lib/$NAME/safe-mode.json" ]; then
+            python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore("/var/lib/openhop-geofence").save(SafeModeLatch(True, "initial commissioning", None))'
+            chown "$NAME:$NAME" "/var/lib/$NAME/safe-mode.json"
+        fi
+        if [ ! -e "$CONF_DIR/secrets/web-auth" ] && [ ! -L "$CONF_DIR/secrets/web-auth" ] \
+            && [ ! -e "/var/lib/$NAME/web-setup-pending" ] && [ ! -L "/var/lib/$NAME/web-setup-pending" ] \
+            && [ ! -e "/var/lib/$NAME/web-setup-claimed" ] && [ ! -L "/var/lib/$NAME/web-setup-claimed" ]; then
+            install -m 0600 -o "$NAME" -g "$NAME" /dev/null "/var/lib/$NAME/web-setup-pending"
+            echo "Set the administrator password from the web interface on a trusted LAN."
+        fi
     fi
 fi
 

@@ -6,10 +6,10 @@ imported only when the interface is enabled.
 
 Security (DESIGN.md section 9):
 
-* Every page and API call requires login, including on localhost.
+* APIs require login, including on localhost, except for one-time setup.
 * Accounts are stored in ``web.auth_file`` as ``user:role:werkzeug-hash``
-  lines (role ``admin`` or ``operator``); create them with
-  ``openhop-geofence passwd``.
+  lines (role ``admin`` or ``operator``); administrators can change their
+  password in the web interface or use ``openhop-geofence passwd``.
 * Sessions use a signed cookie whose key is random per process, so logins
   reset on restart and nothing is written to disk.
 * Mutations require POST, a CSRF token header, and a same-origin request.
@@ -20,6 +20,7 @@ Security (DESIGN.md section 9):
 from __future__ import annotations
 
 import collections
+import hashlib
 import hmac
 import ipaddress
 import logging
@@ -35,6 +36,7 @@ from urllib.parse import urlparse
 from . import __version__
 from . import config as config_mod
 from .controller import CommandError
+from .state import managed_secret_path
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +105,25 @@ def set_password(path: str, user: str, role: str, password: str) -> None:
     lines.append(f"{user}:{role}:{generate_password_hash(password)}")
     p.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(p, ("\n".join(lines) + "\n").encode(), mode=0o640)
+
+
+def close_initial_setup(state_dir: Path) -> bool:
+    """Claim the one-time setup marker, durably and without replacing a claim."""
+    pending = state_dir / "web-setup-pending"
+    claimed = state_dir / "web-setup-claimed"
+    try:
+        os.link(pending, claimed)
+    except FileNotFoundError:
+        return False
+    except FileExistsError:
+        return False
+    pending.unlink()
+    fd = os.open(state_dir, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +207,7 @@ def _allowed_host(host: str) -> bool:
     return name.lower() in ("localhost", local, local + ".local", local.split(".")[0])
 
 
-def create_app(controller: Any, *, trace: Any = None):
+def create_app(controller: Any, *, trace: Any = None, setup_dir: Path | None = None):
     """Build the Flask application."""
     from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory, session
 
@@ -199,18 +220,38 @@ def create_app(controller: Any, *, trace: Any = None):
         JSON_SORT_KEYS=False,
     )
     throttle = LoginThrottle()
+    password_lock = threading.Lock()
     hostname = socket.gethostname()
 
     def cfg():
         return controller.cfg
+
+    def setup_available() -> bool:
+        if setup_dir is None:
+            return False
+        pending, claimed = setup_dir / "web-setup-pending", setup_dir / "web-setup-claimed"
+        auth = Path(cfg().web.auth_file)
+        if auth.exists() or auth.is_symlink():
+            if pending.exists():
+                try:
+                    close_initial_setup(setup_dir)
+                except OSError:
+                    log.exception("cannot close initial web setup")
+            return False
+        return pending.is_file() and not claimed.exists()
+
+    with password_lock:
+        setup_available()
 
     def current_user() -> tuple[str, str] | None:
         user = session.get("user")
         if not user:
             return None
         account = load_accounts(cfg().web.auth_file).get(user)
-        if account is None or account[0] != session.get("role"):
-            session.clear()  # Account removed or role changed.
+        fingerprint = hashlib.sha256(account[1].encode()).hexdigest() if account else ""
+        if (account is None or account[0] != session.get("role")
+                or not hmac.compare_digest(fingerprint, session.get("credential", ""))):
+            session.clear()
             return None
         return user, account[0]
 
@@ -230,8 +271,12 @@ def create_app(controller: Any, *, trace: Any = None):
                 sent = request.headers.get("X-CSRF-Token", "")
                 if not token or not hmac.compare_digest(token, sent):
                     return error(403, "missing or invalid CSRF token")
-        if request.endpoint not in ("index", "login", "static", "session_info") and current_user() is None:
+        if request.endpoint not in ("index", "login", "static", "session_info", "initial_setup") and current_user() is None:
             return error(401, "login required")
+        if session.get("change_password_required") and request.endpoint not in (
+            "index", "static", "session_info", "change_password", "logout"
+        ):
+            return error(403, "change the default administrator password first")
         return None
 
     @app.after_request
@@ -266,8 +311,14 @@ def create_app(controller: Any, *, trace: Any = None):
     def session_info():
         user = current_user()
         if user is None:
-            return jsonify({"user": None})
-        return jsonify({"user": user[0], "role": user[1], "csrf": session.get("csrf"), "hostname": hostname})
+            with password_lock:
+                available = setup_available()
+            if available:
+                session.setdefault("csrf", secrets.token_urlsafe(32))
+                return jsonify({"user": None, "setup_required": True, "csrf": session["csrf"]})
+            return jsonify({"user": None, "setup_required": False})
+        return jsonify({"user": user[0], "role": user[1], "csrf": session.get("csrf"), "hostname": hostname,
+                        "change_password_required": bool(session.get("change_password_required"))})
 
     @app.post("/api/login")
     def login():
@@ -285,14 +336,99 @@ def create_app(controller: Any, *, trace: Any = None):
             return error(401, "invalid username or password")
         throttle.succeeded(addr)
         session.clear()
-        session.update(user=user, role=account[0], csrf=secrets.token_urlsafe(32))
+        change_required = user == "admin" and account[0] == "admin" and check_password_hash(account[1], "geofence")
+        session.update(user=user, role=account[0], csrf=secrets.token_urlsafe(32),
+                       credential=hashlib.sha256(account[1].encode()).hexdigest(),
+                       change_password_required=change_required)
         log.info("web login: %s (%s) from %s", user, account[0], addr)
-        return jsonify({"ok": True, "user": user, "role": account[0], "csrf": session["csrf"], "hostname": hostname})
+        return jsonify({"ok": True, "user": user, "role": account[0], "csrf": session["csrf"],
+                        "hostname": hostname, "change_password_required": change_required})
 
     @app.post("/api/logout")
     def logout():
         session.clear()
         return jsonify({"ok": True})
+
+    @app.post("/api/setup")
+    def initial_setup():
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return error(400, "JSON object required")
+        password = data.get("password")
+        if not isinstance(password, str) or not 8 <= len(password) <= 1024 or password == "geofence":
+            return error(400, "password must be 8 to 1024 characters and not the old default")
+        from werkzeug.security import generate_password_hash
+
+        with password_lock:
+            if setup_dir is None or not setup_available():
+                return error(409, "initial setup is not available")
+            try:
+                path = managed_secret_path(controller.config_path, cfg().web.auth_file)
+                others = (cfg().openhop.api_key_file, cfg().meshmapper.api_key_file, cfg().companion.ble_pin_file)
+                if any(path.resolve() == Path(other).resolve() for other in others if other):
+                    raise ValueError("account file path is also used by another credential")
+                account = f"admin:admin:{generate_password_hash(password)}\n".encode()
+                if not close_initial_setup(setup_dir):
+                    return error(409, "initial setup has already been claimed")
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+                with os.fdopen(fd, "wb") as fh:
+                    os.fchmod(fh.fileno(), 0o640)
+                    fh.write(account)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (OSError, ValueError) as exc:
+                log.error("initial web setup failed: %s", exc)
+                return error(500, "setup failed; create an account with sudo openhop-geofence passwd admin")
+        session.clear()
+        return jsonify({"ok": True, "result": "administrator created; log in"})
+
+    @app.post("/api/password")
+    def change_password():
+        user = current_user()
+        if user is None or user[1] != "admin":
+            return error(403, "administrator required")
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return error(400, "JSON object required")
+        old, new = data.get("current_password"), data.get("new_password")
+        if not isinstance(old, str) or not isinstance(new, str) or len(new) < 8 or len(new) > 1024:
+            return error(400, "new password must be between 8 and 1024 characters")
+        if new == "geofence":
+            return error(400, "choose a password other than the default")
+        from werkzeug.security import check_password_hash
+
+        with password_lock:
+            account = load_accounts(cfg().web.auth_file).get(user[0])
+            if account is None or account[0] != user[1] or not check_password_hash(account[1], old):
+                return error(403, "current password is incorrect")
+            try:
+                path = managed_secret_path(controller.config_path, cfg().web.auth_file)
+                others = (cfg().openhop.api_key_file, cfg().meshmapper.api_key_file, cfg().companion.ble_pin_file)
+                if any(path.resolve() == Path(other).resolve() for other in others if other):
+                    raise ValueError("account file path is also used by another credential")
+                set_password(str(path), user[0], user[1], new)
+            except (OSError, ValueError) as exc:
+                return error(500, f"cannot change password: {exc}")
+        session.clear()
+        return jsonify({"ok": True, "result": "password changed; log in again"})
+
+    @app.post("/api/secrets")
+    def update_secret():
+        user = current_user()
+        if user is None or user[1] != "admin":
+            return error(403, "administrator required")
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return error(400, "JSON object required")
+        kind, value = data.get("kind"), data.get("value")
+        if not isinstance(kind, str) or not isinstance(value, str):
+            return error(400, "secret kind and value are required")
+        return run("update_secret", kind=kind, value=value)
 
     # -- status and control ----------------------------------------------------
 
@@ -505,7 +641,7 @@ class WebServer:
 def ensure_auth_file_warning(path: str) -> str | None:
     """Return a warning if no account can log in."""
     if not os.path.exists(path):
-        return f"web auth file {path} does not exist; create an account with 'openhop-geofence passwd'"
+        return f"web auth file {path} does not exist; complete initial web setup if available or use 'openhop-geofence passwd'"
     if not load_accounts(path):
         return f"web auth file {path} contains no valid accounts"
     return None

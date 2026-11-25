@@ -47,7 +47,7 @@ non-OpenHop radio adapters are future enhancements.
   restarts. Clearing safe mode is a separate authenticated action that
   verifies service health.
 - On unexpected internal faults or invalid control state, persist safe mode,
-  request OpenHop `no_tx`, and report the fault. A bounded last-gasp
+  request OpenHop `no_tx`, and report the fault. A bounded failure announcement
   notification may precede the mode request under the conditions in
   section 10. Do not clear the latch automatically.
 - Use hysteresis to prevent rapid mode changes. Monitor transitions are
@@ -95,7 +95,7 @@ non-OpenHop radio adapters are future enhancements.
   `clear` command. Transmit no reports, replies, or RF
   acknowledgements until the clear succeeds and the resulting OpenHop mode
   permits transmission.
-- For eligible service faults, permit at most three last-gasp send submissions
+- For eligible service faults, permit at most three failure announcement send submissions
   within a configurable grace period before requesting `no_tx`. Do not wait
   for recipient ACKs. Explicit Disable all TX and conditions indicating
   prohibited transmission bypass this grace period.
@@ -103,15 +103,16 @@ non-OpenHop radio adapters are future enhancements.
 ### Web interface and operation
 
 - Provide an optional responsive web interface for status, controls,
-  configuration editing, and zone management. Bind to localhost:8080 by
-  default; LAN access requires explicit configuration and authentication.
+  configuration editing, credentials, and zone management. The packaged
+  example binds to all interfaces on port 8080 for authenticated LAN setup.
 - Enable browser-side map editing by default. Keep circles as the standard
   zone editor and polygons as an advanced option. The map can be disabled.
 - Support standalone execution and systemd on mainstream Linux distributions.
 - Provide separate **Restart service** and **Reboot host** actions through
   the web interface and companion DMs. Restrict both to administrators.
-  Host reboot requires local opt-in; the web interface also requires
-  confirmation. Neither action clears safe mode.
+  Host reboot is enabled by default; the web interface also requires
+  confirmation. A local configuration setting can disable reboot. Neither
+  action clears safe mode.
 - Publish a Debian `Architecture: all` package and portable source and wheel
   distributions. Do not vendor or redistribute dependencies; use OS packages
   or pip to install them.
@@ -119,7 +120,7 @@ non-OpenHop radio adapters are future enhancements.
   where available and write durable state only when it changes.
 - Provide optional location and mode tracing, disabled by default. When
   enabled, use a bounded rolling RAM buffer. Advanced disk recording requires
-  explicit local configuration and limits on total file size and retention
+  explicit administrator configuration and limits on total file size and retention
   time.
 - Support authenticated trace export, mode-colored map tracks with zones
   and MeshMapper coverage squares, and offline GeoJSON conversion without
@@ -413,7 +414,7 @@ Resume automatic clears an ordinary override and restarts eligibility
 timers, but cannot clear safe mode.
 
 The companion interface uses these same checks. Channel messages cannot
-change modes or clear safe mode. An eligible last-gasp notification introduces
+change modes or clear safe mode. An eligible failure announcement notification introduces
 only the bounded exception in section 10; it does not release the latch.
 
 The controller is the sole mode authority while active. Unexpected external
@@ -460,7 +461,7 @@ restart clears ordinary overrides but retains safe mode. Abrupt termination,
 including a watchdog timeout, cannot guarantee a final mode change; the
 restarted service applies the startup policy.
 
-With last-gasp notifications enabled, an eligible fault can leave the existing
+With failure announcement notifications enabled, an eligible fault can leave the existing
 mode active for the configured grace period. Local command acceptance is not
 proof of RF transmission or recipient delivery. A separate companion's radio
 is outside the controlled OpenHop instance's `no_tx` guarantee.
@@ -490,9 +491,10 @@ apply `policy.outside`.
 Only activate the client when MeshMapper is enabled and configured.
 Explicit zones always decide first, even when MeshMapper is down.
 
-1. Fetch authorized region boundaries from configured official region/group
-   URLs. Cache boundaries by key identity and scope. A coverage bounding box
-   does not establish authorization.
+1. Resolve configured region codes through the authenticated country directory,
+   then fetch each region boundary from its official URL. Cache boundaries by
+   key identity, country and region codes. A coverage bounding box does not
+   establish authorization.
 2. Fetch coverage with `f_days=14` and matching radio parameters by default.
    Convert OpenHop frequency and bandwidth values from Hz to the API's
    documented units.
@@ -528,7 +530,7 @@ provide fill-in coverage. MeshMapper SNR values are collected from varied
 companions and equipment; validate their meaning and suitable thresholds
 against field data before enabling this feature.
 
-Settings in `[meshmapper.experimental]`, used only when enabled:
+Settings in `[meshmapper]`, used only when enabled:
 
 - `min_snr_db`: average `snr` of a covered square must be at least this
   value; weaker squares select Repeat.
@@ -588,7 +590,7 @@ Validate configuration with `tomllib`; use tomlkit to preserve comments when
 the web interface edits the file.
 
 The example below enables MeshMapper, the web interface, and the map.
-MeshMapper remains optional. With no key file or region URL, report it as
+MeshMapper remains optional. With no key file or configured regions, report it as
 unavailable and apply `policy.outside`; this is not a configuration error.
 
 ```toml
@@ -613,7 +615,8 @@ minimum_monitor_seconds = 30.0
 enabled = true # Set false to disable all MeshMapper requests
 api_key_file = "/etc/openhop-geofence/secrets/meshmapper.key"
 coverage_url = "https://meshmapper.net/coverage.php"
-region_urls = [] # Add official authorized region/group site(s) at setup
+country = "US"
+regions = ["ORD"] # Chicago, IL; replace with regions authorized by your key
 lookback_days = 14
 covered_types = ["BIDIR", "TX", "RX", "DISC"]
 match_radio = true
@@ -623,7 +626,6 @@ boundary_refresh_seconds = 86400
 max_boundary_age_seconds = 604800
 daily_request_budget = 80
 
-[meshmapper.experimental]
 # Experimental: select Repeat in weakly covered squares, e.g. for a parked
 # repeater providing fill-in coverage at the edge of the fixed network.
 weak_coverage_thresholds = false
@@ -632,8 +634,11 @@ weak_coverage_thresholds = false
 
 [web]
 enabled = true
-bind = "127.0.0.1"
+bind = "0.0.0.0" # Trusted LAN only; never expose directly to the internet.
 port = 8080
+# Fresh Debian installs prompt for an admin password in the web interface.
+# Or use: sudo openhop-geofence passwd admin
+# Other installations require creating an account with the same command.
 auth_file = "/etc/openhop-geofence/secrets/web-auth"
 allow_config_edit = true
 map_enabled = true # Set false to disable maps; forms still work
@@ -653,44 +658,46 @@ minimum_report_interval_seconds = 60
 command_prefix = "!geofence"
 command_authorization = "admin_keys" # Or explicitly "any_sender"
 admin_public_keys = [] # Full public keys; empty list permits no control
-last_gasp_enabled = true
-last_gasp_max_attempts = 3 # Total submissions across report channels
-last_gasp_grace_seconds = 10.0 # Initial value; validate against airtime
+# Send a final fault message before disabling TX, when safe and possible.
+announce_failure_enabled = true
+announce_failure_max_attempts = 3 # Total submissions across report channels
+announce_failure_grace_seconds = 10.0 # Initial value; validate against airtime
 # serial_device = "/dev/serial/by-id/REPLACE_WITH_COMPANION"
 # serial_baud = 115200
 # ble_address = "REPLACE_WITH_COMPANION_ADDRESS"
-# ble_pin_file = "/etc/openhop-geofence/secrets/companion-ble-pin"
+ble_pin_file = "/etc/openhop-geofence/secrets/companion-ble-pin"
 
 [maintenance]
-allow_reboot = false # Requires separate OS authorization
+allow_reboot = true # Set false to disable host reboot requests
 
 [diagnostics]
 enabled = false
-storage = "ram" # "disk" requires explicit local configuration
+storage = "ram" # "disk" requires explicit configuration
 sample_interval_seconds = 5.0
 max_buffer_bytes = 4194304 # 4 MiB rolling record buffer
 max_context_bytes = 8388608 # 8 MiB zone and coverage context
 # Disk recording requires all three settings below:
-# directory = "/var/log/openhop-geofence/trace"
+# directory = "/var/lib/openhop-geofence/trace"
 # max_disk_bytes = 33554432 # 32 MiB total, including context
 # max_age_seconds = 86400 # Retain at most 24 hours
 
+# Repeat [[zones]] for each zone; IDs must be unique.
 [[zones]]
-id = "home-repeat"
-name = "Home repeat area"
+id = "chicago-repeat"
+name = "Chicago repeat area"
 role = "repeat"
 shape = "circle"
-latitude = 40.0
-longitude = -105.0
+latitude = 41.8781
+longitude = -87.6298
 radius_m = 1000.0
 
 [[zones]]
-id = "home-monitor"
-name = "Monitor exclusion"
+id = "chicago-monitor"
+name = "Chicago monitor exclusion"
 role = "monitor"
 shape = "circle"
-latitude = 40.0
-longitude = -105.0
+latitude = 41.8781
+longitude = -87.6298
 radius_m = 100.0
 ```
 
@@ -700,22 +707,27 @@ coordinates. Store all zones in the same file for atomic updates.
 
 Validate types, unique zone IDs, ranges, URLs, modes, timers, and unknown
 keys. Reject invalid or unknown settings. Missing optional MeshMapper
-credentials or region URLs make the feature unavailable; apply
-`policy.outside`. Store secrets separately in root-managed files that are not
-editable through the web interface.
+credentials or region codes make the feature unavailable; apply
+`policy.outside`. Store secrets separately in restricted service-managed files;
+administrators can replace but not read their values through the web interface.
 
 The installer creates an unprivileged `openhop-geofence` account:
 
 - Root-owned executable/package and systemd unit.
-- Config directory `/etc/openhop-geofence` mode 1770 `root:openhop-geofence`
-  (sticky): the service can atomically replace `config.toml`, which it owns
-  (0640), but cannot replace root-owned files. Atomic writes preserve the
+- Config directory `/etc/openhop-geofence` mode 2775 `root:openhop-geofence`
+  (setgid): the service can atomically replace `config.toml`, which it owns
+  (0664). Members of the service group can replace entries in this directory,
+  so do not put unrelated root-managed files there. Other users can list the
+  directory and read the configuration, but only root and the service group
+  can edit it. Atomic writes preserve the
   replaced file's owner and group; new files take the directory's group.
   Debian manages `config.toml` as a conffile, including changes made by the
   service; RPM installs it as `%config(noreplace)`.
-- Root-owned secrets directory, readable by the service group, not writable
-  by the service. Files mode 0640, directory mode 0750.
-- Durable state (only the safe mode latch) under `/var/lib/openhop-geofence`.
+- Service-owned secrets directory, listable by local users but not writable
+  by the service group. Files are mode 0640 for service-group access;
+  the directory is mode 2755. Administrators must restrict existing secret
+  files before making the directory listable.
+- Durable state (safe mode latch and one-time setup marker) under `/var/lib/openhop-geofence`.
 - Coverage snapshot under `/var/cache/openhop-geofence`.
 - Runtime lock, status, and MeshMapper request accounting under the
   RAM-backed `/run/openhop-geofence` (systemd `RuntimeDirectory=` with
@@ -795,14 +807,14 @@ does not need permission to manage other units.
 
 **Reboot host** requests an orderly reboot of the Linux host running the
 geofence service, not a remote OpenHop or companion device. The local
-configuration setting `maintenance.allow_reboot` defaults to `false` and
-cannot be changed through either interface. When enabled, use the local OS
-reboot interface with narrowly scoped
-authorization (systemd-logind and polkit on Debian):
-`systemctl reboot --no-wall --no-ask-password`, authorized by the example
-polkit rule `packaging/50-openhop-geofence-reboot.rules`, which the
-operator installs manually. Do not grant the service
-root access or bypass shutdown inhibitors. If reboot is disabled, unsupported,
+configuration setting `maintenance.allow_reboot` defaults to `true` and
+can be changed by a web administrator. When enabled, use the local OS
+reboot interface with narrowly scoped authorization (systemd-logind and
+polkit): `systemctl reboot --no-wall --no-ask-password`, authorized by the
+installed polkit rule `packaging/50-openhop-geofence-reboot.rules`. This
+rule allows the service account itself to reboot, not only requests through
+the interfaces. Do not grant the service root access or bypass shutdown
+inhibitors. If reboot is disabled, unsupported,
 or denied, report the reason and continue running. Acceptance means a request
 was scheduled, not that the service or host has returned.
 
@@ -821,7 +833,7 @@ Display:
   quota/backoff, and when `policy.outside` applies.
 - Configuration revision and any restart-required changes.
 - Companion connection, reporting level, authorization policy, last send
-  result, and any pending last-gasp deadline.
+  result, and any pending failure announcement deadline.
 - Diagnostic recording state, retention limits, dropped records, and export
   availability.
 
@@ -836,14 +848,26 @@ confirmation that identifies the local host.
 
 Use authenticated same-origin session cookies, password hashes via Werkzeug,
 CSRF protection for mutations (`X-CSRF-Token` header), origin and host checks, bounded request bodies,
-and bounded login attempts. Require authentication on localhost.
-Accounts are stored one per line as `user:role:hash` in the root-managed
+and bounded login attempts. Require authentication on localhost except for
+the one-time administrator setup.
+Accounts are stored one per line as `user:role:hash` in the service-managed
 `web.auth_file`, created with `openhop-geofence passwd USER [--role
-admin|operator]`. Both roles may use mode controls, export traces, and edit
+admin|operator]`. A fresh Debian install with no account file creates a durable
+one-time setup marker, not a default account or password. Anyone who can
+reach the service may claim setup and create `admin`; claim the marker before
+creating the account, and never overwrite an existing account file or reopen
+setup when the file is deleted. If setup is interrupted after the claim,
+recover using the local `passwd` command. Upgrades never create a setup marker.
+For older installations using the former `geofence` default, require a
+password change before other actions. Invalidate sessions after a password change.
+Allow administrators to replace OpenHop and MeshMapper API keys and the
+companion BLE PIN without revealing saved values; accept only non-symlink
+files directly in the managed secrets directory. Other installation methods
+require manual account creation.
+Both roles may use mode controls, export traces, and edit
 configuration; endpoints, secret paths, the `[web]` section, and companion
-authorization require an administrator, and maintenance requests require an
-administrator. `[maintenance]` and disk-trace storage settings can be changed
-only by editing the file locally.
+authorization require an administrator, and maintenance requests and changes
+to `[maintenance]` and disk-trace storage settings require an administrator.
 The cookie signing key is generated in memory at startup. The raw
 configuration editor returns 409 Conflict on a revision mismatch; zone edits
 are applied to the TOML document with tomlkit. Use POST for
@@ -857,9 +881,13 @@ default port 8000 or gpsd's 2947. Report binding failures explicitly. Web
 server failure must not stop mode control; report the unavailable interface
 through logs and the CLI. Do not select another port automatically.
 
-Bind to loopback by default. For LAN access, use a trusted setup network.
-Require HTTPS through a reverse proxy or trusted VPN on untrusted networks;
-HTTP authentication does not encrypt traffic.
+The packaged example binds to all interfaces for LAN setup. Use a trusted
+setup network, restrict access with a firewall, and immediately complete
+initial setup; another LAN user could claim it first. The interface is not hardened for
+direct internet exposure, which is not recommended. For remote access, harden
+the host and network and use a trusted VPN or SSH tunnel; a TLS reverse proxy
+alone does not harden the application. HTTP authentication does not encrypt
+traffic.
 
 Use a responsive layout with large controls for desktop and mobile browsers.
 Poll status every five seconds while the page is visible. The control loop
@@ -911,9 +939,9 @@ Evict old records and unreferenced context within the budgets; mark missing
 or oversized context explicitly rather than substituting current data.
 RAM recording is lost on process restart or host reboot.
 
-Advanced disk recording requires `diagnostics.storage = "disk"`, a local
-directory, and positive total-byte and retention-time limits. Neither
-interface may enable disk storage or change its path or limits. Use bounded
+Advanced disk recording requires `diagnostics.storage = "disk"`, a writable
+directory, and positive total-byte and retention-time limits. Web administrators
+may configure these settings. Use bounded
 rotating files and prune the oldest data when either limit is reached,
 including after restart. Include context and temporary output in storage
 budgets. Use a bounded writer queue and batched writes; do not fsync each GPS
@@ -1064,7 +1092,7 @@ succeeded. `resume` cannot clear safe mode; `clear` uses the same
 health checks as the web interface. Do not expose shell execution, arbitrary
 configuration editing, or MeshCore CLI passthrough.
 
-### Shared-radio `no_tx` and last-gasp notifications
+### Shared-radio `no_tx` and failure announcement notifications
 
 Set `shares_openhop_radio` explicitly. A separate companion may continue to
 report and receive commands while the controlled repeater is in `no_tx`.
@@ -1088,11 +1116,11 @@ companion radio.
 For an eligible service fault:
 
 1. Persist the safe mode latch and publish the fault locally.
-2. If last-gasp reporting is enabled, report channels are configured, the
+2. If failure announcement reporting is enabled, report channels are configured, the
    shared companion is connected, and the observed repeater mode permits
-   transmission (`forward` or `monitor`), allow a last-gasp report within
-   `last_gasp_grace_seconds`.
-3. Submit at most `last_gasp_max_attempts` messages across configured report
+   transmission (`forward` or `monitor`), allow a failure announcement report within
+   `announce_failure_grace_seconds`.
+3. Submit at most `announce_failure_max_attempts` messages across configured report
    channels (default and maximum three total). Do not wait for recipient ACKs.
 4. Request `no_tx` no later than the grace deadline, regardless of connection
    state, message acceptance, or queue progress.
@@ -1109,7 +1137,7 @@ Do not delay explicit Disable all TX, routine Monitor decisions mapped to
 safe validation of the notification path, request `no_tx` immediately. An
 explicit Disable all TX cancels any pending grace period. Never re-enable TX
 to send a report or extend the deadline for reconnects or retries. Do not
-replay last-gasp attempts after restart. A saved latch requires immediate
+replay failure announcement attempts after restart. A saved latch requires immediate
 `no_tx` on startup.
 
 Keep the grace deadline in the controller and messaging in the companion
@@ -1153,7 +1181,7 @@ config/config.toml.example
 packaging/openhop-geofence.service
 packaging/install-systemd.sh
 packaging/check-version.sh
-packaging/50-openhop-geofence-reboot.rules   example polkit rule
+packaging/50-openhop-geofence-reboot.rules   installed polkit rule
 packaging/gpsd-nmea-bridge.service           example gpsd-to-OpenHop bridge
 packaging/fedora/                            RPM spec and sysusers.d file
 debian/
@@ -1174,7 +1202,7 @@ viewing, troubleshooting, and uninstallation that preserves operator data.
 
 The README states that the operator is responsible for regional radio
 regulations, including airtime and duty-cycle limits for repeating, companion
-reports, and last-gasp messages. The service does not measure or enforce
+reports, and failure announcement messages. The service does not measure or enforce
 airtime or duty cycle. The README recommends confirming OpenHop's airtime and
 duty-cycle configuration before operation, and refers to OpenHop's
 documentation and local regulations for specific settings.
@@ -1257,8 +1285,10 @@ them:
 Report missing optional features (web interface, map, polygons, MeshMapper, or
 companion messaging) without failing on other installation methods.
 
-Install the systemd unit disabled and do not enable RF as an installation
-side effect. Manage the Debian configuration as a dpkg conffile so local edits
+For a fresh Debian install, persist a commissioning safe-mode latch before
+enabling and starting the service; it must not automatically enable RF.
+OpenHop must already be configured as `no_tx` because the service cannot
+control it before API credentials are supplied. Manage the Debian configuration as a dpkg conffile so local edits
 receive the standard upgrade choices. Byte-compile with `py3compile`
 for the installed Python version; do not ship `.pyc` files.
 Use `debhelper`, `dh-python`, and `pybuild`. Do not install packages into
@@ -1338,7 +1368,7 @@ controllable clock, must cover:
 12. Channel queries, refusal of channel control, administrator-key matching,
     ambiguous identities, unrestricted-policy warnings, stale commands,
     duplicate commands, and identical web/DM controller behavior.
-13. Last-gasp submission limits and deadline, no recipient-ACK wait,
+13. Failure announcement submission limits and deadline, no recipient-ACK wait,
     explicit Disable all TX cancellation, persistence failure, immediate
     startup `no_tx`, receive-only DM control while blocked, no outgoing
     messages before successful clear, failed-clear handling, continued
@@ -1426,7 +1456,7 @@ the BlueZ service, estimated at 3–6 MiB, in addition to the companion row.
 
 Measure service and OpenHop RSS, available memory (`MemAvailable`), tmpfs
 use, page-cache pressure, CPU use, refresh and export peaks, and persistent
-writes on hardware. Include companion messaging and last-gasp bursts in
+writes on hardware. Include companion messaging and failure announcement bursts in
 whole-system resource and airtime tests. If memory is limited, set
 `gpu_mem=16`, then disable tracing, the companion module, the web interface,
 or MeshMapper.
@@ -1454,7 +1484,7 @@ Validation targets on a Pi Zero 2W:
 4. Add authenticated web controls and configuration editing, then map editing
    and optional diagnostic tracing, overlays, and offline export.
 5. Add optional companion reporting, authorized commands, and bounded
-   last-gasp handling.
+   failure announcement handling.
 6. Add Debian packaging, systemd installation, supporting-service guidance,
    documentation, and architecture tests.
 
@@ -1481,7 +1511,7 @@ Control loop:
 
 Companion:
 
-- Last gasp: at most 3 submissions in total, round-robin across report
+- Failure announcement: at most 3 submissions in total, round-robin across report
   channels, with text clipped to 140 characters.
 - After `clear`, the confirmation reply waits up to 15 seconds for `no_tx`
   to be released.
@@ -1497,6 +1527,6 @@ Process and packaging:
   callbacks. Serial companions need a drop-in that disables
   `PrivateDevices=` and adds the `dialout` group.
 - The Debian package depends on `procps` for the unit's `ExecReload`
-  (`kill -HUP`) and installs the unit disabled (`dh_installsystemd
-  --no-enable`). Upgrades restart the service only if it is enabled.
+  (`kill -HUP`), and enables and starts it subject to system policy. Upgrades
+  preserve enablement state and restart the service only if it is enabled.
 - The project is packaged as a Debian native package (`3.0 (native)`).

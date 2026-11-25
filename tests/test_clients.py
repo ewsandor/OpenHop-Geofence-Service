@@ -34,6 +34,7 @@ class ConfigTests(unittest.TestCase):
         cfg = config.parse_config("")
         self.assertFalse(cfg.web.enabled)
         self.assertEqual(cfg.zones, ())
+        self.assertTrue(cfg.maintenance.allow_reboot)
 
     def test_rejects_unknown_and_invalid_settings(self):
         for text in (
@@ -50,6 +51,12 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(config.ConfigError):
                 config.parse_config(text)
 
+    def test_region_scope_is_admin_only(self):
+        old = config.parse_config("[meshmapper]\ncountry='US'\nregions=['ORD']\n")
+        new = config.parse_config("[meshmapper]\ncountry='CA'\nregions=['YOW']\n")
+        self.assertEqual(config.changed_settings(old, new, config.ADMIN_ONLY_SETTINGS),
+                         ["meshmapper.country", "meshmapper.regions"])
+
     def test_disk_trace_requires_limits(self):
         with self.assertRaises(config.ConfigError):
             config.parse_config("[diagnostics]\nenabled = true\nstorage = 'disk'\n")
@@ -57,6 +64,26 @@ class ConfigTests(unittest.TestCase):
     def test_missing_meshmapper_credentials_are_not_an_error(self):
         cfg = config.parse_config("[meshmapper]\nenabled = true\napi_key_file = '/nonexistent'\n")
         self.assertTrue(cfg.meshmapper.enabled)
+
+    def test_meshmapper_regions_and_flat_experimental_settings(self):
+        cfg = config.parse_config(
+            "[meshmapper]\ncountry='US'\nregions=['ORD', 'TST']\n"
+            "weak_coverage_thresholds=true\nmin_snr_db=-10\n"
+        )
+        self.assertEqual(cfg.meshmapper.regions, ["ORD", "TST"])
+        self.assertTrue(cfg.meshmapper.weak_coverage_thresholds)
+        self.assertTrue(cfg.warnings)
+        for text in (
+            "[meshmapper]\nregions=['ORD']\n",
+            "[meshmapper]\ncountry='us'\nregions=['ORD']\n",
+            "[meshmapper]\ncountry='US'\nregions=['ORD','ORD']\n",
+            "[meshmapper]\ncountry='US'\nregions=['../']\n",
+            "[meshmapper]\nweak_coverage_thresholds=true\n",
+            "[meshmapper.experimental]\nweak_coverage_thresholds=false\n",
+            "[meshmapper]\nregion_urls=[]\n",
+        ):
+            with self.subTest(text=text), self.assertRaises(config.ConfigError):
+                config.parse_config(text)
 
 
 class OpenHopClientTests(unittest.TestCase):

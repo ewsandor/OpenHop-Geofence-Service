@@ -15,7 +15,7 @@ distributions.
 
 > **Radio regulations.** The operator is responsible for regional radio
 > regulations, including airtime and duty-cycle limits for repeating,
-> companion reports, and last-gasp messages. **This service does not measure
+> companion reports, and failure announcement messages. **This service does not measure
 > or enforce airtime or duty cycle.** Confirm OpenHop's airtime and
 > duty-cycle configuration before operation; refer to OpenHop's
 > documentation and local regulations for specific settings.
@@ -94,8 +94,10 @@ MeshMapper, the web interface, and the map, even with
 installs `/etc/openhop-geofence/config.toml` as a Debian conffile. On upgrade,
 dpkg preserves local edits and prompts if both the local configuration and
 packaged default changed; it does not automatically merge them. A deliberately
-deleted conffile stays deleted unless explicitly restored. The systemd unit is
-installed **disabled**, so installation never enables RF control.
+deleted conffile stays deleted unless explicitly restored. A fresh install
+enables and starts the service subject to system policy, with safe mode
+persisted for commissioning. OpenHop must itself be placed in persistent
+`no_tx` first: the geofence cannot stop transmission until it can authenticate.
 
 ### Fedora and RPM-based distributions
 
@@ -134,43 +136,33 @@ openhop-geofence --config ./config.toml --state-dir ./state \
 
 ## Commissioning
 
-Commission the service off air first:
+Commission off air first:
 
-1. Set OpenHop to `no_tx` and confirm the mode persists across an OpenHop
-   restart.
-2. Confirm OpenHop's airtime and duty-cycle configuration.
-3. Create an OpenHop API key and store it for the service:
+1. Set OpenHop to `no_tx`, confirm it persists across an OpenHop restart,
+   and confirm its airtime and duty-cycle settings.
+2. On a fresh Debian install, open `http://<device-address>:8080/` from a
+   trusted LAN and choose the password for `admin`. There is no default
+   password. Anyone who can reach the interface can claim this one-time setup,
+   so restrict access with a firewall and complete it immediately; do not
+   expose the interface to the internet.
+3. In Administration, enter the OpenHop API key and any MeshMapper key or
+   companion BLE PIN. Values are write-only. Configure endpoints, region,
+   zones, and other settings in the configuration editor; replace the example
+   Chicago zones. The BLE PIN path must be configured before saving the PIN.
+4. Configure and verify the external OpenHop, gpsd, and any optional
+   companion hardware/software; their installation is not performed by this
+   service. Restart the geofence service from Administration when requested.
+5. Verify GPS, OpenHop connectivity, zones, the outside policy, and GPS-loss
+   behavior with a dummy load or OpenHop TX disabled. Then use **Clear safe
+   mode** to complete commissioning. Clearing requires a valid configuration,
+   an accessible OpenHop API, and a fresh GPS fix.
 
-   ```sh
-   sudo install -m 0640 -g openhop-geofence /dev/null /etc/openhop-geofence/secrets/openhop.key
-   sudoedit /etc/openhop-geofence/secrets/openhop.key
-   ```
-
-4. Edit `/etc/openhop-geofence/config.toml`. Replace the example zones; they
-   are placeholders.
-5. Validate the configuration:
-
-   ```sh
-   sudo -u openhop-geofence openhop-geofence --check-config
-   ```
-
-6. Create a web account. `operator` can use mode controls and edit zones and
-   policy; `admin` can also change endpoints, secrets paths, web and companion
-   authorization settings, and request restart or reboot:
-
-   ```sh
-   sudo openhop-geofence passwd admin
-   ```
-
-7. Start the service and watch the log:
-
-   ```sh
-   sudo systemctl enable --now openhop-geofence
-   journalctl -u openhop-geofence -f
-   ```
-
-8. Verify each zone, the outside policy, and GPS-loss behavior with a dummy
-   load or with OpenHop TX disabled, before operating on air.
+Existing installations retain their accounts, configuration, and enablement
+state. On non-Debian installations, create an account and start the service
+manually using `sudo openhop-geofence passwd admin` and
+`sudo systemctl enable --now openhop-geofence`.
+Deleting an account file later does not reopen setup. If setup is interrupted,
+use `sudo openhop-geofence passwd admin` to recover.
 
 ## Configuration
 
@@ -197,18 +189,38 @@ interface are validated before they are saved. If the service starts with an
 invalid configuration, it latches safe mode, requests `no_tx`, and exits
 with status 78; systemd does not restart it.
 
-Secrets are separate files under `/etc/openhop-geofence/secrets/`. They are
-never shown or edited through the web interface.
+The installed configuration is readable by all local users and writable by
+root and members of the `openhop-geofence` group. Do not put secrets in it.
+Anyone can list `/etc/openhop-geofence/secrets/`, but secret files must be
+restricted to root and the service group (for example, `root:openhop-geofence`
+or `openhop-geofence:openhop-geofence` and mode `0640`). Check existing secret-file permissions before upgrading or
+running the installer: the directory becomes listable, but existing files are
+not automatically secured. Administrators can replace credentials through
+write-only web forms; the service account can also write the secrets directory.
+Web-managed secret paths must be direct, non-symlink files in that directory.
+
+Each `[[zones]]` table defines one zone; add more tables with unique IDs.
+The web zone editor saves the complete edited zone list to the configuration
+file, replacing the existing zone tables rather than simply appending.
+
+The configuration schema has changed during initial testing. If retaining an
+older configuration during a package upgrade, update it to match the current
+example and validate it before restarting the service.
 
 ### MeshMapper
 
 MeshMapper is optional. It requires a region or group integration key from
 MeshMapper. Store the key in `/etc/openhop-geofence/secrets/meshmapper.key`
-and add your authorized region URL(s) to `meshmapper.region_urls`.
+and set `meshmapper.country` to the two-letter country code and
+`meshmapper.regions` to the authorized three-character region codes, such as
+`country = "US"` and `regions = ["ORD"]` for Chicago. The service resolves
+their URLs using the authenticated MeshMapper region directory. All listed
+regions must be in that country and authorized by the key.
 
 - The service downloads the region dataset at most every
   `refresh_seconds` (default 6 h) within `daily_request_budget`, and looks up
-  locations locally. It never queries per position.
+  locations locally. Directory and boundary requests also count toward this
+  budget; requests are spaced apart. It never queries per position.
 - Snapshots are cached in `/var/cache/openhop-geofence` and used offline
   until `max_cache_age_seconds`.
 - If OpenHop has more than one radio, set `meshmapper.radio_filter`.
@@ -219,10 +231,15 @@ coverage.
 
 ## Web interface
 
-The web interface listens on `127.0.0.1:8080` by default. To use it from
-another device, set `web.bind` to the Pi's LAN address (or `0.0.0.0`) and
-restrict access with a firewall. It uses plain HTTP; use it only on trusted
-networks, or behind an SSH tunnel or TLS reverse proxy:
+The packaged example listens on `0.0.0.0:8080` for LAN setup; restrict access
+with a firewall. Anyone who can reach a fresh installation can claim the
+administrator account until setup is complete. The interface is
+intended for trusted LANs, not as a hardened
+internet-facing service. **Exposing it to the internet is not recommended.**
+It uses plain HTTP, which does not protect passwords or sessions in transit.
+If remote access is necessary, harden the host and network, restrict access,
+and use a trusted VPN or SSH tunnel; a TLS reverse proxy alone does not make
+the application hardened:
 
 ```sh
 ssh -L 8080:127.0.0.1:8080 pi@repeater.local
@@ -231,20 +248,24 @@ ssh -L 8080:127.0.0.1:8080 pi@repeater.local
 The interface shows mode, GPS, OpenHop, MeshMapper, and companion status.
 It provides Force Repeat, Force Monitor, Resume, Disable all TX, Clear safe
 mode, restart, and reboot, plus zone editing on the map and a raw
-configuration editor. `[maintenance]` and disk-trace storage settings can
-only be changed by editing the file on the device. Set `web.map_enabled = false` on constrained devices;
+configuration editor. Administrators can edit `[maintenance]` and disk-trace
+settings; for disk traces, use a service-writable directory such as
+`/var/lib/openhop-geofence/trace`. Set `web.map_enabled = false` on constrained devices;
 map tiles and rendering run in the browser.
 
 ### Reboot authorization
 
-Host reboot is disabled by default. To enable it, set
-`maintenance.allow_reboot = true` and allow the service user to reboot
-through polkit:
+Host reboot is enabled by default. The packages install a polkit rule allowing
+the service account to request an ordinary reboot through systemd-logind;
+shutdown inhibitors still apply. The rule grants this permission to the
+service account itself, not just requests through the interfaces. Portable
+installs also install the rule but require systemd-logind and polkit.
 
-```sh
-sudo cp /usr/share/doc/openhop-geofence/examples/50-openhop-geofence-reboot.rules \
-    /etc/polkit-1/rules.d/
-```
+The web interface requires an administrator login and host-name confirmation;
+companion reboot commands require an allowlisted administrator key and a
+fresh DM. Set `maintenance.allow_reboot = false` in the administrator
+configuration editor to disable reboot requests through both interfaces. Existing
+configurations retain their current setting.
 
 ## Companion (optional)
 
@@ -379,7 +400,7 @@ contains location history; handle it as private data.
 | Stays in Monitor | GPS fix: `gpspipe -w -x 5`; hysteresis countdown in the web status |
 | `openhop` fault | API URL and key; `curl -H "X-API-Key: ..." http://127.0.0.1:8000/api/stats` |
 | Safe mode latched | Status shows the reason; fix it, then Clear |
-| MeshMapper unavailable | Key, region URL, quota, clock synchronization |
+| MeshMapper unavailable | Key, country and region codes, quota, clock synchronization |
 | External control conflict | Another tool changed the OpenHop mode; the service applies `no_tx` |
 | Service does not start | `journalctl -u openhop-geofence -b`; `openhop-geofence --check-config` |
 

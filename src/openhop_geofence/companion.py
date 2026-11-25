@@ -13,7 +13,7 @@ Transmission rules (DESIGN.md section 10):
   reports that TX is permitted. Suppressed replies are logged, never queued.
 * Incoming DMs are still processed while blocked so an authorized ``clear``
   can be received.
-* During an eligible fault, a bounded number of last-gasp channel messages
+* During an eligible fault, a bounded number of failure announcement channel messages
   may be submitted before the controller's grace deadline.
 """
 
@@ -64,7 +64,7 @@ def _clip(text: str) -> str:
 
 
 class Companion:
-    """MeshCore companion client: reporting, commands, and last-gasp messages."""
+    """MeshCore companion client: reporting, commands, and failure announcement messages."""
 
     def __init__(
         self,
@@ -102,7 +102,7 @@ class Companion:
         self._last_report_at = -1e18
         self._seen: collections.deque[tuple] = collections.deque(maxlen=DEDUP_SIZE)
         self._command_times: collections.deque[float] = collections.deque()
-        self._last_gasp_sent = False
+        self._announce_failure_sent = False
 
     # ------------------------------------------------------------------
     # Lifecycle (called from the main thread)
@@ -144,19 +144,19 @@ class Companion:
         if self.loop is not None and not self._stopping:
             self.loop.call_soon_threadsafe(self._add_report, event.kind, event.level, event.message)
 
-    def last_gasp_ready(self) -> bool:
+    def announce_failure_ready(self) -> bool:
         return (
-            self.cfg.last_gasp_enabled
+            self.cfg.announce_failure_enabled
             and bool(self.cfg.report_channels)
             and self.connected
             and self.loop is not None
             and not self._stopping
         )
 
-    def send_last_gasp(self, text: str) -> None:
-        """Submit bounded last-gasp messages without waiting for delivery."""
+    def send_announce_failure(self, text: str) -> None:
+        """Submit bounded failure announcement messages without waiting for delivery."""
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self._last_gasp(text)))
+            self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self._announce_failure(text)))
 
     def status(self) -> dict:
         return {
@@ -286,10 +286,10 @@ class Companion:
     def _tx_allowed(self) -> bool:
         return not self.cfg.shares_openhop_radio or bool(getattr(self.controller, "tx_permitted", False))
 
-    async def _send(self, target: str, text: str, *, last_gasp: bool = False) -> bool:
+    async def _send(self, target: str, text: str, *, announce_failure: bool = False) -> bool:
         """Send to ``ch:<idx>`` or ``dm:<key>``. Honors the shared-radio gate."""
         text = _clip(text)
-        if not last_gasp and not self._tx_allowed():
+        if not announce_failure and not self._tx_allowed():
             self.suppressed += 1
             log.info("companion message suppressed (shared radio TX not permitted): %s", text)
             return False
@@ -311,15 +311,15 @@ class Companion:
             log.warning("companion send to %s failed: %s", kind, getattr(result, "payload", result))
         return ok
 
-    async def _last_gasp(self, text: str) -> None:
-        if self._last_gasp_sent:
-            return  # At most one last-gasp burst per process.
-        self._last_gasp_sent = True
+    async def _announce_failure(self, text: str) -> None:
+        if self._announce_failure_sent:
+            return  # At most one failure announcement burst per process.
+        self._announce_failure_sent = True
         channels = self.cfg.report_channels
-        attempts = min(self.cfg.last_gasp_max_attempts, 3)
+        attempts = min(self.cfg.announce_failure_max_attempts, 3)
         for i in range(attempts):
-            await self._send(f"ch:{channels[i % len(channels)]}", text, last_gasp=True)
-        log.warning("last-gasp: %d message(s) submitted", attempts)
+            await self._send(f"ch:{channels[i % len(channels)]}", text, announce_failure=True)
+        log.warning("failure announcement: %d message(s) submitted", attempts)
 
     # ------------------------------------------------------------------
     # Reports

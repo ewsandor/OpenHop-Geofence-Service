@@ -1,8 +1,4 @@
-// Example polkit rule allowing the openhop-geofence service account to reboot
-// the host through systemd-logind. Not installed automatically.
-//
-// Install only if you also set maintenance.allow_reboot = true:
-//   sudo install -m 0644 50-openhop-geofence-reboot.rules /etc/polkit-1/rules.d/
+// Allow the openhop-geofence service account to reboot through systemd-logind.
 //
 // The rule grants only an ordinary reboot. Shutdown inhibitors are still
 // honored (org.freedesktop.login1.reboot-ignore-inhibit is not granted).

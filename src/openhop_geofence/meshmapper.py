@@ -64,6 +64,14 @@ class MeshMapperError(Exception):
         self.config_fault = config_fault
 
 
+class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+        if (old.scheme, old.netloc) != (new.scheme, new.netloc):
+            raise MeshMapperError("cross-origin redirect refused for authenticated MeshMapper request")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -260,7 +268,7 @@ def _http_get(url: str, api_key: str, etag: str | None = None) -> tuple[int, byt
     if etag:
         req.add_header("If-None-Match", etag)
     try:
-        resp = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT)
+        resp = urllib.request.build_opener(_SameOriginRedirect()).open(req, timeout=HTTP_TIMEOUT)
     except urllib.error.HTTPError as exc:
         resp = exc  # HTTPError is a response object with status and body
     except (urllib.error.URLError, OSError) as exc:
@@ -351,12 +359,16 @@ class MeshMapperWorker:
         self._thread: threading.Thread | None = None
         self._api_key = read_secret(cfg.api_key_file)
         self._next_refresh_jitter = random.uniform(0, 0.1)
+        self._boundary_urls: list[tuple[str, str]] | None = None
+        self._pending_boundaries: list[dict] = []
+        self._pending_boundary_at = 0.0
+        self._pending_filters: dict[str, str] | None = None
 
     # -- configuration ------------------------------------------------------
 
     @property
     def configured(self) -> bool:
-        return bool(self.cfg.enabled and self._api_key and self.cfg.region_urls)
+        return bool(self.cfg.enabled and self._api_key and self.cfg.country and self.cfg.regions)
 
     @property
     def key_id(self) -> str:
@@ -370,8 +382,8 @@ class MeshMapperWorker:
             return "Shapely is not installed"
         if not self._api_key:
             return "no API key file"
-        if not self.cfg.region_urls:
-            return "no region URLs configured"
+        if not self.cfg.country or not self.cfg.regions:
+            return "no country or regions configured"
         return None
 
     def current_filters(self) -> dict[str, str] | None:
@@ -411,7 +423,7 @@ class MeshMapperWorker:
 
     def lookup(self, lat: float, lon: float) -> policy.CoverageResult:
         """Classify a position. Never performs network I/O."""
-        reason = self.unconfigured_reason()
+        reason = self.unconfigured_reason() or self._config_fault
         if reason:
             return policy.CoverageResult(False, reason=reason)
         if not self._trusted():
@@ -436,7 +448,7 @@ class MeshMapperWorker:
     def classify(self, sq: Square) -> str:
         if sq.type not in self.cfg.covered_types:
             return policy.UNCOVERED
-        x = self.cfg.experimental
+        x = self.cfg
         if x.weak_coverage_thresholds:
             if x.min_snr_db is not None and sq.snr is not None and sq.snr < x.min_snr_db:
                 return policy.WEAK
@@ -485,7 +497,7 @@ class MeshMapperWorker:
             backoff_until_utc=acct.get("backoff_until_utc"),
             last_error=self._last_error,
             filters=dict(ds.filters) if ds else {},
-            experimental=self.cfg.experimental.weak_coverage_thresholds,
+            experimental=self.cfg.weak_coverage_thresholds,
         )
 
     # -- snapshot -----------------------------------------------------------
@@ -504,7 +516,7 @@ class MeshMapperWorker:
         try:
             if data.get("version") != SNAPSHOT_VERSION or data.get("key_id") != self.key_id:
                 raise ValueError("key or version changed")
-            if tuple(data.get("scope", ())) != tuple(self.cfg.region_urls):
+            if tuple(data.get("scope", ())) != (self.cfg.country, *self.cfg.regions):
                 raise ValueError("region scope changed")
             ds = Dataset(
                 squares=[Square.from_compact(r) for r in data["squares"]],
@@ -613,6 +625,10 @@ class MeshMapperWorker:
             return
         if filters is None:
             return  # Waiting for OpenHop radio settings.
+        if self._pending_filters != filters:
+            self._boundary_urls = None
+            self._pending_boundaries = []
+            self._pending_filters = filters
         if ds is not None and ds.filters != filters:
             log.info("MeshMapper filters changed; discarding cached coverage")
             with self._lock:
@@ -622,12 +638,29 @@ class MeshMapperWorker:
         need_boundary = boundaries is None or now - boundaries_at >= self.cfg.boundary_refresh_seconds
         interval = max(self.cfg.refresh_seconds * (1 + self._next_refresh_jitter), MIN_COVERAGE_INTERVAL)
         need_coverage = ds is None or now - ds.fetched_at >= interval
-        if not (need_boundary or need_coverage) or not self._may_request():
+        if not (need_boundary or need_coverage):
+            return
+        ready_boundary = need_boundary and self._boundary_urls == []
+        if (not ready_boundary or need_coverage or ds is None) and not self._may_request():
             return
         try:
             if need_boundary:
-                boundaries = self._fetch_boundaries()
-                boundaries_at = self._wall()
+                if self._boundary_urls is None:
+                    self._boundary_urls = self._resolve_regions()
+                    self._pending_boundaries = []
+                    self._pending_boundary_at = now
+                    return
+                if now - self._pending_boundary_at >= self.cfg.max_boundary_age_seconds:
+                    self._boundary_urls = None
+                    self._pending_boundaries = []
+                    return
+                if self._boundary_urls:
+                    code, url = self._boundary_urls[0]
+                    self._pending_boundaries.extend(self._fetch_boundary(code, url))
+                    self._boundary_urls.pop(0)
+                    return
+                boundaries = self._pending_boundaries
+                boundaries_at = self._pending_boundary_at
             squares, generated_at, etag = (
                 self._fetch_coverage(filters, ds) if need_coverage or ds is None else (None, None, None)
             )
@@ -643,6 +676,8 @@ class MeshMapperWorker:
             return
         self._clear_backoff()
         self._last_error = None
+        self._boundary_urls = None
+        self._pending_boundaries = []
         self._next_refresh_jitter = random.uniform(0, 0.1)
         if squares is None:
             # 304 Not Modified or boundary-only refresh: keep measurements and
@@ -652,7 +687,7 @@ class MeshMapperWorker:
                           ds.scope, boundaries, boundaries_at, ds.etag)
         else:
             new = Dataset(squares, generated_at, self._wall(), filters, self.key_id,
-                          tuple(self.cfg.region_urls), boundaries, boundaries_at, etag)
+                          (self.cfg.country, *self.cfg.regions), boundaries, boundaries_at, etag)
         try:
             new.build_index()
         except (ValueError, zones.ShapelyUnavailable) as exc:
@@ -680,16 +715,45 @@ class MeshMapperWorker:
         except ValueError:
             raise MeshMapperError("incomplete or invalid JSON response") from None
 
-    def _fetch_boundaries(self) -> list[dict]:
-        geometries: list[dict] = []
-        for base in self.cfg.region_urls:
-            url = base if base.endswith(".php") else base.rstrip("/") + "/get_geojson.php"
-            data, _, _ = self._get_json(url)
+    def _resolve_regions(self) -> list[tuple[str, str]]:
+        url = "https://meshmapper.net/get_zones.php?" + urllib.parse.urlencode({"country": self.cfg.country})
+        data, _, _ = self._get_json(url)
+        if not isinstance(data, dict) or data.get("country") != self.cfg.country or not isinstance(data.get("zones"), list):
+            raise MeshMapperError("invalid MeshMapper region directory")
+        found: dict[str, str] = {}
+        for region in data["zones"]:
+            if not isinstance(region, dict) or region.get("code") not in self.cfg.regions:
+                continue
+            code, base = region["code"], region.get("url")
+            if code in found or not isinstance(base, str):
+                raise MeshMapperError(f"invalid directory entry for region {code}")
             try:
-                geometries.extend(parse_boundaries(data))
-            except ValueError as exc:
-                raise MeshMapperError(f"{url}: {exc}") from None
-        return geometries
+                parsed = urllib.parse.urlsplit(base)
+            except ValueError:
+                raise MeshMapperError(f"invalid MeshMapper URL for region {code}") from None
+            host = parsed.hostname or ""
+            if (parsed.scheme != "https" or not host.endswith(".meshmapper.net")
+                    or parsed.netloc != host or parsed.path not in ("", "/")
+                    or parsed.query or parsed.fragment):
+                raise MeshMapperError(f"invalid MeshMapper URL for region {code}")
+            found[code] = base.rstrip("/") + "/get_geojson.php"
+        missing = [code for code in self.cfg.regions if code not in found]
+        if missing:
+            raise MeshMapperError(f"regions not found or not authorized: {', '.join(missing)}", config_fault=True)
+        return [(code, found[code]) for code in self.cfg.regions]
+
+    def _fetch_boundary(self, code: str, url: str) -> list[dict]:
+        data, _, _ = self._get_json(url)
+        if not isinstance(data, dict) or data.get("type") != "FeatureCollection" or not isinstance(data.get("features"), list):
+            raise MeshMapperError(f"{code}: invalid boundary response")
+        features = [f for f in data["features"] if isinstance(f, dict)
+                    and isinstance(f.get("properties"), dict) and f["properties"].get("code") == code]
+        if len(features) != 1:
+            raise MeshMapperError(f"{code}: boundary response must contain exactly one matching region")
+        try:
+            return parse_boundaries({"type": "FeatureCollection", "features": features})
+        except ValueError as exc:
+            raise MeshMapperError(f"{code}: {exc}") from None
 
     def _fetch_coverage(self, filters: dict[str, str], ds: Dataset | None):
         url = self.cfg.coverage_url + "?" + urllib.parse.urlencode(filters)

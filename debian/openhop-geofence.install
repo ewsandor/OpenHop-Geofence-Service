@@ -1,1 +1,2 @@
 config/config.toml.example usr/share/openhop-geofence/
+packaging/50-openhop-geofence-reboot.rules usr/share/polkit-1/rules.d/

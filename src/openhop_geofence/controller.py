@@ -37,7 +37,7 @@ from .openhop import (
     OpenHopProtocolError,
     RadioSettings,
 )
-from .state import SafeModeLatch, SafeModeStore, atomic_write
+from .state import SafeModeLatch, SafeModeStore, atomic_write, managed_secret_path
 from .system import Notifier, RESTART_EXIT_STATUS, request_reboot
 
 log = logging.getLogger(__name__)
@@ -69,9 +69,9 @@ class Listener(Protocol):
     def on_event(self, event: Event) -> None: ...
 
 
-class LastGaspSender(Protocol):
-    def last_gasp_ready(self) -> bool: ...
-    def send_last_gasp(self, text: str) -> None: ...
+class FailureAnnouncementSender(Protocol):
+    def announce_failure_ready(self) -> bool: ...
+    def send_announce_failure(self, text: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ class Controller:
         self.meshmapper = make_meshmapper(cfg) if make_meshmapper else None
         self.listeners: list[Listener] = []
         self.evaluation_hooks: list[Callable[[Evaluation], None]] = []
-        self.last_gasp: LastGaspSender | None = None
+        self.announce_failure: FailureAnnouncementSender | None = None
         self.status_providers: dict[str, Callable[[], Any]] = {}
 
         self._commands: queue.Queue = queue.Queue(maxsize=32)
@@ -267,7 +267,7 @@ class Controller:
             self._evaluate()
         except Exception as exc:
             log.exception("controller evaluation failed")
-            self._on_fault(f"internal error: {exc.__class__.__name__}: {exc}", last_gasp=True)
+            self._on_fault(f"internal error: {exc.__class__.__name__}: {exc}", announce_failure=True)
             # Enforce safe mode even when evaluation keeps failing.
             try:
                 self._enforce_minimal()
@@ -364,7 +364,7 @@ class Controller:
             self.observed_mode, self.observed_at = state.mode, now
             self._on_fault(
                 f"control conflict: OpenHop mode changed externally from {previous} to {state.mode}",
-                last_gasp=True,
+                announce_failure=True,
             )
             return False
         if not was_connected:
@@ -417,7 +417,7 @@ class Controller:
         if isinstance(exc, (OpenHopAuthError, OpenHopProtocolError)):
             self._api_failures += 1
             if self._api_failures == API_FAULT_THRESHOLD:
-                self._on_fault(f"OpenHop API fault: {exc}", last_gasp=True)
+                self._on_fault(f"OpenHop API fault: {exc}", announce_failure=True)
 
     def _enforce_minimal(self) -> None:
         """Best-effort ``no_tx`` when the regular evaluation cannot run."""
@@ -444,8 +444,8 @@ class Controller:
         self.latch_persisted, self.persistence_error = True, None
         return True
 
-    def _on_fault(self, cause: str, *, last_gasp: bool) -> None:
-        """Latch safe mode for a service fault, optionally after a last gasp."""
+    def _on_fault(self, cause: str, *, announce_failure: bool) -> None:
+        """Latch safe mode for a service fault, optionally after a failure announcement."""
         if self.latch.active and self.fault == cause:
             return  # Already handled; avoid repeated latching and reports.
         already_active = self.latch.active
@@ -454,23 +454,23 @@ class Controller:
         self.override = None
         persisted = self._set_latch(cause)
         self._emit(ERROR, "fault", f"fault: {cause}; safe mode, requesting no_tx")
-        grace = self.cfg.companion.last_gasp_grace_seconds
+        grace = self.cfg.companion.announce_failure_grace_seconds
         if (
-            last_gasp and persisted and not already_active and grace > 0
-            and self.last_gasp is not None
+            announce_failure and persisted and not already_active and grace > 0
+            and self.announce_failure is not None
             and self.observed_mode in ("forward", "monitor")
-            and self.last_gasp.last_gasp_ready()
+            and self.announce_failure.announce_failure_ready()
         ):
             self.grace_until = self.clock() + grace
             try:
-                self.last_gasp.send_last_gasp(f"FAULT: {cause[:80]}. Entering safe mode (no_tx).")
+                self.announce_failure.send_announce_failure(f"FAULT: {cause[:80]}. Entering safe mode (no_tx).")
             except Exception:
-                log.exception("last-gasp submission failed")
-            log.warning("last-gasp grace period: no_tx within %.0f s", grace)
+                log.exception("failure announcement submission failed")
+            log.warning("failure announcement grace period: no_tx within %.0f s", grace)
 
     def _check_grace(self, now: float) -> None:
         if self.grace_until is not None and now >= self.grace_until:
-            log.info("last-gasp grace period ended; requesting no_tx")
+            log.info("failure announcement grace period ended; requesting no_tx")
             self.grace_until = None
 
     # ------------------------------------------------------------------
@@ -607,7 +607,7 @@ class Controller:
             new = config_mod.load_config(self.config_path)
         except (OSError, ConfigError) as exc:
             self.config_error = str(exc)
-            self._on_fault(f"invalid configuration on reload: {str(exc).splitlines()[0]}", last_gasp=True)
+            self._on_fault(f"invalid configuration on reload: {str(exc).splitlines()[0]}", announce_failure=True)
             raise CommandError(f"reload failed; safe mode latched: {exc}") from None
         return self._apply_config(new)
 
@@ -625,9 +625,6 @@ class Controller:
             new = config_mod.parse_config(text)
         except ConfigError as exc:
             raise CommandError(str(exc)) from None
-        local = config_mod.changed_settings(self.cfg, new, config_mod.LOCAL_ONLY_SETTINGS)
-        if local:
-            raise CommandError(f"these settings can only be changed locally: {', '.join(local)}")
         if role != "admin":
             admin = config_mod.changed_settings(self.cfg, new, config_mod.ADMIN_ONLY_SETTINGS)
             if admin:
@@ -639,6 +636,39 @@ class Controller:
             self._emit(ERROR, "persistence", f"configuration save failed: {exc}")
             raise CommandError(f"configuration not saved: {exc}") from None
         return "saved; " + self._apply_config(new)
+
+    def _cmd_update_secret(self, kind: str, value: str) -> str:
+        paths = {
+            "openhop": self.cfg.openhop.api_key_file,
+            "meshmapper": self.cfg.meshmapper.api_key_file,
+            "companion_ble_pin": self.cfg.companion.ble_pin_file,
+        }
+        if kind not in paths:
+            raise CommandError("unknown secret")
+        if (not isinstance(value, str) or not value or len(value) > 4096
+                or value != value.strip() or "\n" in value or "\r" in value or "\0" in value):
+            raise CommandError("secret must be a non-empty single line without surrounding whitespace")
+        try:
+            path = managed_secret_path(self.config_path, paths[kind])
+            other_paths = [self.cfg.web.auth_file, *(v for k, v in paths.items() if k != kind and v)]
+            if any(path.resolve() == Path(other).resolve() for other in other_paths):
+                raise ValueError("secret file path is also used by another credential")
+            atomic_write(path, (value + "\n").encode("utf-8"), mode=0o640)
+        except (OSError, ValueError) as exc:
+            raise CommandError(f"cannot save secret: {exc}") from None
+        if kind == "openhop":
+            self.openhop = self._make_openhop(self.cfg)
+            self._connected = False
+            self._next_poll = 0.0
+        elif kind == "meshmapper" and self._make_meshmapper is not None:
+            if self.meshmapper is not None:
+                self.meshmapper.stop()
+            self.meshmapper = self._make_meshmapper(self.cfg)
+            if self.meshmapper is not None:
+                self.meshmapper.start()
+        else:
+            return "secret saved; restart the service to apply it"
+        return "secret saved and applied; clear safe mode after health checks if needed"
 
     def _apply_config(self, new: Config) -> str:
         """Apply a validated configuration and restart eligibility timers."""
@@ -731,7 +761,7 @@ class Controller:
                 "since_utc": self.latch.since_utc,
                 "persisted": self.latch_persisted,
                 "persistence_error": self.persistence_error,
-                "last_gasp_seconds": round(self.grace_until - now, 1) if self.grace_until else None,
+                "announce_failure_seconds": round(self.grace_until - now, 1) if self.grace_until else None,
             },
             "fault": self.fault,
             "gps": {
