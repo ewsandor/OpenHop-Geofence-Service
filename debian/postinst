@@ -1,6 +1,5 @@
 #!/bin/sh
-# Create the service account and directories; install the example
-# configuration only if none exists. Never enables or starts the service.
+# Create the service account and directories. Never enables the service.
 set -e
 
 NAME=openhop-geofence
@@ -15,9 +14,8 @@ if [ "$1" = "configure" ]; then
     # config.toml (which it owns) for web edits but not root-owned files.
     install -d -m 1770 -o root -g "$NAME" "$CONF_DIR"
     install -d -m 0750 -o root -g "$NAME" "$CONF_DIR/secrets"
-    if [ ! -e "$CONF_DIR/config.toml" ]; then
-        install -m 0640 -o "$NAME" -g "$NAME" \
-            /usr/share/$NAME/config.toml.example "$CONF_DIR/config.toml"
+    if [ -e "$CONF_DIR/config.toml" ] || [ -L "$CONF_DIR/config.toml" ]; then
+        chown -h "$NAME:$NAME" "$CONF_DIR/config.toml"
     fi
 fi
 

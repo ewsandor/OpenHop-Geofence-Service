@@ -7,7 +7,6 @@ NAME=openhop-geofence
 
 if [ "$1" = "purge" ]; then
     rm -rf "/var/lib/$NAME" "/var/cache/$NAME" "/run/$NAME"
-    rm -f "/etc/$NAME/config.toml"
     rmdir --ignore-fail-on-non-empty "/etc/$NAME/secrets" "/etc/$NAME" 2>/dev/null || true
 fi
 

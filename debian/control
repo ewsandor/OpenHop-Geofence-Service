@@ -14,12 +14,9 @@ X-Python3-Version: >= 3.11
 
 Package: openhop-geofence
 Architecture: all
-Depends: ${python3:Depends}, ${misc:Depends}, adduser, procps
-Recommends: python3-shapely,
-            python3-flask,
-            python3-waitress,
-            python3-tomlkit,
-            libjs-leaflet
+Depends: ${python3:Depends}, ${misc:Depends}, adduser, procps,
+         python3-shapely, python3-flask, python3-waitress,
+         python3-tomlkit, libjs-leaflet
 Suggests: gpsd, gpsd-clients, python3-venv
 Description: geofenced Repeat/Monitor control for an OpenHop MeshCore repeater
  Switches an OpenHop MeshCore repeater between Repeat (forward) and Monitor

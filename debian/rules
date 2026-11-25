@@ -7,6 +7,12 @@ export PYBUILD_NAME=openhop-geofence
 %:
 	dh $@ --with python3 --buildsystem=pybuild
 
+execute_after_dh_auto_install:
+	install -D -m 0640 config/config.toml.example debian/openhop-geofence/etc/openhop-geofence/config.toml
+
+override_dh_fixperms:
+	dh_fixperms -X/etc/openhop-geofence/config.toml
+
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 	PYTHONPATH=src:tests PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests

@@ -88,11 +88,14 @@ sudo apt install ./openhop-geofence_<version>_all.deb
 # or: sudo dpkg -i openhop-geofence_<version>_all.deb && sudo apt-get -f install
 ```
 
-`apt` also installs the recommended packages for polygons, MeshMapper, the
-web interface, and the map. Use `--no-install-recommends` for a minimal
-install. The package creates the `openhop-geofence` system user and
-`/etc/openhop-geofence/config.toml`. It installs the systemd unit
-**disabled**, so installation never enables RF control.
+The Debian package requires the distribution packages for polygons,
+MeshMapper, the web interface, and the map, even with
+`--no-install-recommends`. It creates the `openhop-geofence` system user and
+installs `/etc/openhop-geofence/config.toml` as a Debian conffile. On upgrade,
+dpkg preserves local edits and prompts if both the local configuration and
+packaged default changed; it does not automatically merge them. A deliberately
+deleted conffile stays deleted unless explicitly restored. The systemd unit is
+installed **disabled**, so installation never enables RF control.
 
 ### Fedora and RPM-based distributions
 

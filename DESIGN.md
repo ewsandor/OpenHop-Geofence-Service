@@ -711,8 +711,8 @@ The installer creates an unprivileged `openhop-geofence` account:
   (sticky): the service can atomically replace `config.toml`, which it owns
   (0640), but cannot replace root-owned files. Atomic writes preserve the
   replaced file's owner and group; new files take the directory's group.
-  `config.toml` is not a dpkg conffile or RPM-verified file, because the
-  service edits it; packages install it from the example only if absent.
+  Debian manages `config.toml` as a conffile, including changes made by the
+  service; RPM installs it as `%config(noreplace)`.
 - Root-owned secrets directory, readable by the service group, not writable
   by the service. Files mode 0640, directory mode 0750.
 - Durable state (only the safe mode latch) under `/var/lib/openhop-geofence`.
@@ -1235,8 +1235,9 @@ Each tagged release publishes:
   `sudo dpkg -i openhop-geofence_<version>_all.deb`. Because `dpkg` does not
   download dependencies, follow with `sudo apt-get -f install`, or use
   `sudo apt install ./openhop-geofence_<version>_all.deb` to install the
-  package and dependencies together. `apt` installs recommended packages by
-  default; `--no-install-recommends` omits optional features.
+  package and dependencies together. The Debian package installs the
+  dependencies for its default MeshMapper, web, and map configuration even
+  with `--no-install-recommends`.
 - `openhop-geofence-<version>-1.fc<N>.noarch.rpm`: Fedora package built on
   the current Fedora release, with a sysusers.d account and the same unit.
   It depends on that release's Python version; other RPM distributions can
@@ -1249,18 +1250,16 @@ Each tagged release publishes:
 Declare Debian dependencies from distribution repositories; do not bundle
 them:
 
-- Depends: `python3 (>= 3.11)`.
-- Recommends: `python3-shapely` (polygons, MeshMapper), `python3-flask`,
+- Depends: `python3 (>= 3.11)`, `python3-shapely` (polygons, MeshMapper), `python3-flask`,
   `python3-waitress`, `python3-tomlkit` (web interface), `libjs-leaflet` (map).
 - Suggests: `gpsd`, `gpsd-clients`, `python3-venv` (optional companion).
 
-`apt-get -f install` installs only required dependencies; install
-recommended packages separately if needed. Report missing optional features
-(web interface, map, polygons, MeshMapper, or companion messaging) without
-failing.
+Report missing optional features (web interface, map, polygons, MeshMapper, or
+companion messaging) without failing on other installation methods.
 
-Install the systemd unit disabled, preserve existing configuration, and do
-not enable RF as an installation side effect. Byte-compile with `py3compile`
+Install the systemd unit disabled and do not enable RF as an installation
+side effect. Manage the Debian configuration as a dpkg conffile so local edits
+receive the standard upgrade choices. Byte-compile with `py3compile`
 for the installed Python version; do not ship `.pyc` files.
 Use `debhelper`, `dh-python`, and `pybuild`. Do not install packages into
 Debian's externally managed system Python with pip.

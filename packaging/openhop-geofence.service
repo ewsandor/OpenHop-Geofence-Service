@@ -59,7 +59,10 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectClock=yes
+# The controller reads clock synchronization with adjtimex/clock_adjtime.
+# ProtectClock blocks even read-only calls; CapabilityBoundingSet= still
+# prevents the service from changing the clock.
+ProtectClock=no
 ProtectHostname=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
@@ -72,7 +75,7 @@ CapabilityBoundingSet=
 # A companion serial transport needs a drop-in; see README.md.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service adjtimex clock_adjtime clock_adjtime64
 
 [Install]
 WantedBy=multi-user.target
