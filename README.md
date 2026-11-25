@@ -402,6 +402,18 @@ PYTHONPATH=src:tests python3 -m unittest discover -s tests
 Tests use fake gpsd, OpenHop, and MeshMapper servers and never contact a
 live radio or the MeshMapper API. See [AGENTS.md](AGENTS.md).
 
+### Preparing a release
+
+Run `python3 packaging/bump-version.py` and enter a new, greater
+`MAJOR.MINOR.PATCH` version and a one-line release summary. The Debian
+maintainer is offered as the changelog author; you can supply another author.
+The script updates the Python version and adds Debian and RPM changelog
+entries. Review and commit the changes; it does not create or push a tag.
+
+After merging and passing CI, create and push a matching tag (for example
+`v1.2.3`). The release workflow checks the version, reruns CI, and publishes
+the packages on GitHub Releases.
+
 ## License
 
 MIT; see [LICENSE](LICENSE). Dependencies are installed separately and keep
