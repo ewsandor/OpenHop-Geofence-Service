@@ -1,3 +1,2 @@
 config/config.toml.example
-packaging/50-openhop-geofence-reboot.rules
 packaging/gpsd-nmea-bridge.service

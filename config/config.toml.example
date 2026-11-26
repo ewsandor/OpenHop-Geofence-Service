@@ -4,9 +4,10 @@
 #   openhop-geofence --check-config
 # Apply without restarting:  sudo systemctl reload openhop-geofence
 #
-# Secrets (API keys, web accounts) live in separate files under
-# /etc/openhop-geofence/secrets and are never edited through the web interface.
-# Replace the illustrative zone coordinates below before enabling the service.
+# This file is readable by local users; never put secrets in it. Secrets live
+# in restricted files under /etc/openhop-geofence/secrets and are write-only
+# in the web interface.
+# Replace the illustrative zone coordinates before allowing automatic Repeat.
 
 [openhop]
 base_url = "http://127.0.0.1:8000"
@@ -26,10 +27,12 @@ repeat_delay_seconds = 10.0
 minimum_monitor_seconds = 30.0
 
 [meshmapper]
-enabled = true # Set false to disable all MeshMapper requests
+enabled = false # Set true to enable MeshMapper requests
+# Coverage requires a region/group integration key; personal keys do not work.
 api_key_file = "/etc/openhop-geofence/secrets/meshmapper.key"
 coverage_url = "https://meshmapper.net/coverage.php"
-region_urls = [] # Add official authorized region/group site(s) at setup
+country = "US" # ISO country code used to look up regions
+regions = ["ORD"] # Chicago, IL; replace with regions authorized by your key
 lookback_days = 14
 covered_types = ["BIDIR", "TX", "RX", "DISC"]
 match_radio = true
@@ -40,7 +43,6 @@ boundary_refresh_seconds = 86400
 max_boundary_age_seconds = 604800
 daily_request_budget = 80
 
-[meshmapper.experimental]
 # Experimental: select Repeat in weakly covered squares, e.g. for a parked
 # repeater providing fill-in coverage at the edge of the fixed network.
 weak_coverage_thresholds = false
@@ -49,8 +51,12 @@ weak_coverage_thresholds = false
 
 [web]
 enabled = true
-bind = "127.0.0.1"
+bind = "0.0.0.0" # Trusted LAN only; never expose directly to the internet.
 port = 8080
+# File of web login accounts and password hashes, not a plaintext password.
+# Fresh Debian installs prompt for an admin password in the web interface.
+# Or create an account with: sudo openhop-geofence passwd admin
+# Other installations require creating an account with the same command.
 auth_file = "/etc/openhop-geofence/secrets/web-auth"
 allow_config_edit = true
 map_enabled = true # Set false to disable maps; forms still work
@@ -73,42 +79,43 @@ minimum_report_interval_seconds = 60
 command_prefix = "!geofence"
 command_authorization = "admin_keys" # Or explicitly "any_sender"
 admin_public_keys = [] # Full public keys; empty list permits no control
-last_gasp_enabled = true
-last_gasp_max_attempts = 3 # Total submissions across report channels
-last_gasp_grace_seconds = 10.0 # Initial value; validate against airtime
+# Send a final fault message before disabling TX, when safe and possible.
+announce_failure_enabled = true
+announce_failure_max_attempts = 3 # Total submissions across report channels
+announce_failure_grace_seconds = 10.0 # Initial value; validate against airtime
 # serial_device = "/dev/serial/by-id/REPLACE_WITH_COMPANION"
 # serial_baud = 115200
 # ble_address = "REPLACE_WITH_COMPANION_ADDRESS"
-# ble_pin_file = "/etc/openhop-geofence/secrets/companion-ble-pin"
+ble_pin_file = "/etc/openhop-geofence/secrets/companion-ble-pin"
 
 [maintenance]
-allow_reboot = false # Requires separate OS authorization
+allow_reboot = true # Set false to disable host reboot requests
 
 [diagnostics]
 enabled = false
-storage = "ram" # "disk" requires explicit local configuration
+storage = "ram" # "disk" requires explicit configuration
 sample_interval_seconds = 5.0
 max_buffer_bytes = 4194304 # 4 MiB rolling record buffer
 max_context_bytes = 8388608 # 8 MiB zone and coverage context
 # Disk recording requires all three settings below:
-# directory = "/var/log/openhop-geofence/trace"
+# directory = "/var/lib/openhop-geofence/trace"
 # max_disk_bytes = 33554432 # 32 MiB total, including context
 # max_age_seconds = 86400 # Retain at most 24 hours
 
+# Repeat [[zones]] for each zone. The web zone editor
+# saves the complete zone list back to this file.
 [[zones]]
-id = "home-repeat"
-name = "Home repeat area"
+name = "Chicago repeat area"
 role = "repeat"
 shape = "circle"
-latitude = 40.0
-longitude = -105.0
+latitude = 41.8781
+longitude = -87.6298
 radius_m = 1000.0
 
 [[zones]]
-id = "home-monitor"
-name = "Monitor exclusion"
+name = "Chicago monitor exclusion"
 role = "monitor"
 shape = "circle"
-latitude = 40.0
-longitude = -105.0
+latitude = 41.8781
+longitude = -87.6298
 radius_m = 100.0

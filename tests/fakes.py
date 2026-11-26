@@ -16,7 +16,7 @@ from openhop_geofence.openhop import (
     OpenHopUnavailable,
     RadioSettings,
 )
-from openhop_geofence.state import SafeModeLatch
+from openhop_geofence.state import SafeModeLatch, TxLockout
 
 # Keep test output readable; failures still show assertion details.
 logging.getLogger("openhop_geofence").addHandler(logging.NullHandler())
@@ -111,6 +111,24 @@ class MemStore:
             raise OSError("read-only file system")
         self.latch = latch
         self.saves.append(latch)
+
+
+class MemTxLockoutStore:
+    """In-memory operator lockout store with injectable persistence failures."""
+
+    def __init__(self, lockout: TxLockout | None = None):
+        self.lockout = lockout or TxLockout()
+        self.fail = False
+        self.saves: list[TxLockout] = []
+
+    def load(self) -> TxLockout:
+        return self.lockout
+
+    def save(self, lockout: TxLockout) -> None:
+        if self.fail:
+            raise OSError("read-only file system")
+        self.lockout = lockout
+        self.saves.append(lockout)
 
 
 class RecordingNotifier:

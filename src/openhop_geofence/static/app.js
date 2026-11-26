@@ -93,15 +93,24 @@ function showLogin() {
   session = null;
   clearInterval(pollTimer); pollTimer = null;
   $("#login-view").hidden = false;
+  $("#initial-setup-view").hidden = true;
+  $("#setup-password-view").hidden = true;
   $("#app-view").hidden = true;
   $("#who").hidden = true;
 }
 
 function showApp() {
   $("#login-view").hidden = true;
+  $("#initial-setup-view").hidden = true;
+  $("#setup-password-view").hidden = !session.change_password_required;
+  if (session.change_password_required) {
+    $("#app-view").hidden = true;
+    $("#who").hidden = true;
+    return;
+  }
   $("#app-view").hidden = false;
   $("#who").hidden = false;
-  $("#who-name").textContent = `${session.user} (${session.role})`;
+  $("#who-name").textContent = session.role === "admin" ? "Administrator" : "Operator";
   $("#admin-card").hidden = session.role !== "admin";
   startPolling();
   loadZones();
@@ -113,7 +122,7 @@ $("#login-form").addEventListener("submit", async (ev) => {
   const f = ev.target;
   $("#login-error").textContent = "";
   try {
-    session = await api("api/login", { username: f.username.value, password: f.password.value });
+    session = await api("api/login", { password: f.password.value, remember: f.remember.checked });
     f.password.value = "";
     showApp();
   } catch (e) {
@@ -126,6 +135,59 @@ $("#logout").addEventListener("click", async () => {
   showLogin();
 });
 
+$("#initial-setup-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target, error = form.querySelector(".error");
+  error.textContent = "";
+  if (form.new_password.value !== form.confirm_password.value) {
+    error.textContent = "Passwords do not match.";
+    return;
+  }
+  try {
+    await api("api/setup", { password: form.new_password.value });
+    form.reset();
+    showLogin();
+    $("#login-notice").textContent = "Administrator created. Log in.";
+    $("#login-notice").hidden = false;
+  } catch (e) {
+    error.textContent = e.message;
+  }
+});
+
+document.querySelectorAll(".password-form").forEach((form) => {
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const error = form.querySelector(".error");
+    error.textContent = "";
+    if (form.new_password.value !== form.confirm_password.value) {
+      error.textContent = "New passwords do not match.";
+      return;
+    }
+    try {
+      await api("api/password", { current_password: form.current_password.value, new_password: form.new_password.value });
+      form.reset();
+      showLogin();
+      $("#login-notice").textContent = "Password changed. Log in again.";
+      $("#login-notice").hidden = false;
+    } catch (e) {
+      error.textContent = e.message;
+    }
+  });
+});
+
+$("#secret-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  try {
+    const data = await api("api/secrets", { kind: form.kind.value, value: form.value.value });
+    form.value.value = "";
+    say(data.result);
+    refresh();
+  } catch (e) {
+    say(`Save credential: ${e.message}`, true);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Status polling (paused while the page is hidden)
 // ---------------------------------------------------------------------------
@@ -135,10 +197,10 @@ function startPolling() {
   refresh();
   pollTimer = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden && session) refresh(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && session && session.user) refresh(); });
 
 async function refresh() {
-  if (!session) return;
+  if (!session || !session.user) return;
   try {
     status = await api("api/status");
   } catch (e) {
@@ -151,12 +213,15 @@ async function refresh() {
 
 function render(s) {
   const c = s.control || {}, oh = s.openhop || {}, sm = s.safe_mode || {}, g = s.gps || {};
+  const txLockout = s.tx_lockout || {};
   const mode = oh.observed_mode || "unknown";
 
   // Banner for conditions that need attention.
   const alerts = [];
   if (sm.active) alerts.push(`Safe mode active: ${sm.cause}`);
   if (sm.persistence_error) alerts.push(`Safe mode latch not persisted: ${sm.persistence_error}`);
+  if (txLockout.active) alerts.push(`Manual TX lockout active: ${txLockout.cause}`);
+  if (txLockout.persistence_error) alerts.push(`TX lockout not persisted: ${txLockout.persistence_error}`);
   if (s.fault) alerts.push(`Fault: ${s.fault}`);
   if (s.config && s.config.error) alerts.push(`Configuration error: ${s.config.error}`);
   if (s.maintenance && s.maintenance.pending) alerts.push(`Maintenance: ${s.maintenance.pending}`);
@@ -167,6 +232,8 @@ function render(s) {
   badge.textContent = { forward: "REPEAT", monitor: "MONITOR", no_tx: "NO TX" }[mode] || "UNKNOWN";
   badge.className = `badge ${mode}`;
   $("#mode-detail").textContent = `${c.state || "—"}${c.reason ? " — " + c.reason : ""}`;
+  $("#clear-safe-mode").hidden = !sm.active;
+  $("#clear-tx-lockout").hidden = !txLockout.active;
   fill("#mode-list", [
     ["Control", c.state],
     ["Source", c.source],
@@ -240,7 +307,7 @@ function render(s) {
       ["Suppressed", cp.suppressed_messages || undefined],
       ["Identity", cp.identity_warning],
       ["Error", cp.error],
-      ["Last gasp", sm.last_gasp_seconds != null ? `${sm.last_gasp_seconds} s until no_tx` : undefined],
+      ["Failure announcement", sm.announce_failure_seconds != null ? `${sm.announce_failure_seconds} s until no_tx` : undefined],
     ]);
   }
 
@@ -281,9 +348,14 @@ function render(s) {
 document.querySelectorAll("button[data-action]").forEach((b) => {
   b.addEventListener("click", () => {
     const name = b.dataset.action;
-    if (name === "disable_tx" && !confirm("Disable all TX and latch safe mode?")) return;
+    if (name === "disable_tx" && !confirm("Disable all TX and keep the operator TX lockout across restarts?")) return;
     act(b.textContent, () => api("api/action", { action: name }));
   });
+});
+
+$("#clear-tx-lockout").addEventListener("click", () => {
+  if (!confirm("Clear the operator TX lockout? Automatic policy may enable Repeat.")) return;
+  act("Clear TX lockout", () => api("api/action", { action: "clear_tx_lockout" }));
 });
 
 $("#restart").addEventListener("click", () => {
@@ -292,10 +364,7 @@ $("#restart").addEventListener("click", () => {
 });
 
 $("#reboot").addEventListener("click", () => {
-  const host = (session && session.hostname) || "";
-  const typed = prompt(`Reboot the host? Type the host name "${host}" to confirm.`);
-  if (typed === null) return;
-  act("Reboot", () => api("api/maintenance", { action: "reboot", confirm_host: typed }));
+  act("Reboot", () => api("api/maintenance", { action: "reboot" }));
 });
 
 // ---------------------------------------------------------------------------
@@ -333,7 +402,7 @@ function renderZones() {
   tbody.replaceChildren();
   zones.forEach((z, i) => {
     const tr = document.createElement("tr");
-    for (const v of [z.id, z.name || z.id, z.role, z.shape || "circle"]) {
+    for (const v of [z.name, z.role, z.shape || "circle"]) {
       const td = document.createElement("td"); td.textContent = v; tr.append(td);
     }
     const td = document.createElement("td");
@@ -356,7 +425,7 @@ $("#zone-form").shape.addEventListener("change", shapeFields);
 function editZone(i) {
   const f = $("#zone-form"), z = zones[i];
   f.index.value = i;
-  f.id.value = z.id; f.name.value = z.name || ""; f.role.value = z.role; f.shape.value = z.shape || "circle";
+  f.name.value = z.name; f.role.value = z.role; f.shape.value = z.shape || "circle";
   f.latitude.value = z.latitude ?? ""; f.longitude.value = z.longitude ?? ""; f.radius_m.value = z.radius_m ?? "";
   f.geometry.value = z.geometry ? JSON.stringify(z.geometry) : "";
   shapeFields();
@@ -368,15 +437,14 @@ $("#zone-reset").addEventListener("click", () => { $("#zone-form").reset(); $("#
 $("#zone-form").addEventListener("submit", (ev) => {
   ev.preventDefault();
   const f = ev.target;
-  const z = { id: f.id.value.trim(), role: f.role.value, shape: f.shape.value };
-  if (f.name.value.trim()) z.name = f.name.value.trim();
+  const z = { name: f.name.value.trim(), role: f.role.value, shape: f.shape.value };
+  if (!z.name) { say("Zone name is required", true); return; }
   if (z.shape === "circle") {
     z.latitude = Number(f.latitude.value); z.longitude = Number(f.longitude.value); z.radius_m = Number(f.radius_m.value);
   } else {
     try { z.geometry = JSON.parse(f.geometry.value); } catch (e) { say("Geometry is not valid JSON", true); return; }
   }
   const i = f.index.value === "" ? -1 : Number(f.index.value);
-  if (zones.some((o, j) => o.id === z.id && j !== i)) { say(`Zone id ${z.id} already exists`, true); return; }
   if (i >= 0) zones[i] = z; else zones.push(z);
   f.index.value = i >= 0 ? i : zones.length - 1;
   renderZones();
@@ -446,7 +514,7 @@ function drawZones() {
   const bounds = [];
   for (const z of zones) {
     const color = z.role === "monitor" ? COLORS.monitor : COLORS.forward;
-    const label = `${z.name || z.id} (${z.role})`;
+    const label = `${z.name} (${z.role})`;
     let layer;
     if ((z.shape || "circle") === "circle" && Number.isFinite(z.latitude)) {
       layer = L.circle([z.latitude, z.longitude], { radius: z.radius_m, color, weight: 2, fillOpacity: 0.1 });
@@ -554,6 +622,11 @@ $("#trace-clear").addEventListener("click", () => {
 (async () => {
   try {
     const d = await api("api/session");
-    if (d.user) { session = d; showApp(); } else showLogin();
+    if (d.user) { session = d; showApp(); }
+    else if (d.setup_required) {
+      session = d;
+      $("#initial-setup-view").hidden = false;
+      $("#login-view").hidden = true;
+    } else showLogin();
   } catch (e) { showLogin(); }
 })();

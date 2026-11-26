@@ -17,6 +17,18 @@ from pathlib import Path
 from typing import Any
 
 SAFE_MODE_FILE = "safe-mode.json"
+TX_LOCKOUT_FILE = "tx-lockout.json"
+
+
+def managed_secret_path(config_path: str | Path, path: str | None) -> Path:
+    """Resolve a configured secret directly inside the managed secrets directory."""
+    if not path:
+        raise ValueError("the secret file path is not configured")
+    target = Path(path)
+    directory = (Path(config_path).parent / "secrets").resolve()
+    if not target.is_absolute() or target.parent.resolve() != directory or target.is_symlink():
+        raise ValueError("secret file must be a non-symlink directly inside the managed secrets directory")
+    return target
 
 
 def atomic_write(path: str | Path, data: bytes, mode: int | None = None, fsync: bool = True) -> None:
@@ -102,6 +114,43 @@ class SafeModeStore:
         """Persist the latch durably. Raises OSError on failure."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(self.path, json.dumps(asdict(latch)).encode(), mode=0o640)
+
+
+@dataclass(frozen=True)
+class TxLockout:
+    """Persistent operator-requested TX disable, separate from fault safe mode."""
+
+    active: bool = False
+    cause: str = ""
+    since_utc: float | None = None
+
+
+class TxLockoutStore:
+    """Reads and writes the operator-requested TX lockout."""
+
+    def __init__(self, state_dir: str | Path):
+        self.path = Path(state_dir) / TX_LOCKOUT_FILE
+
+    def load(self) -> TxLockout:
+        """Load the lockout; unreadable or corrupt state remains disabled."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return TxLockout()
+        except (OSError, ValueError) as exc:
+            return TxLockout(True, f"unreadable TX lockout: {exc}", None)
+        if not isinstance(data, dict) or not isinstance(data.get("active"), bool):
+            return TxLockout(True, "corrupt TX lockout", None)
+        since = data.get("since_utc")
+        return TxLockout(
+            data["active"], str(data.get("cause", "")),
+            since if isinstance(since, (int, float)) else None,
+        )
+
+    def save(self, lockout: TxLockout) -> None:
+        """Persist the lockout durably. Raises OSError."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(self.path, json.dumps(asdict(lockout)).encode(), mode=0o640)
 
 
 class RuntimeDir:

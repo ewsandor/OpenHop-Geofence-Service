@@ -72,7 +72,6 @@ def valid_lat_lon(lat: Any, lon: Any) -> bool:
 class Zone:
     """Common zone attributes. Subclasses implement :meth:`contains`."""
 
-    id: str
     name: str
     role: str
 
@@ -101,7 +100,7 @@ class CircleZone(Zone):
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [self.longitude, self.latitude]},
             "properties": {
-                "id": self.id, "name": self.name, "role": self.role,
+                "name": self.name, "role": self.role,
                 "shape": "circle", "radius_m": self.radius_m,
             },
         }
@@ -124,7 +123,7 @@ class PolygonZone(Zone):
         return {
             "type": "Feature",
             "geometry": self.geometry,
-            "properties": {"id": self.id, "name": self.name, "role": self.role, "shape": "geojson"},
+            "properties": {"name": self.name, "role": self.role, "shape": "geojson"},
         }
 
 

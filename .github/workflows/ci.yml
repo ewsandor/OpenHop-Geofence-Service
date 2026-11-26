@@ -106,6 +106,13 @@ jobs:
           dnf -y -q install dist/*.noarch.rpm
           openhop-geofence --version
           su -s /bin/sh -c 'openhop-geofence --check-config' openhop-geofence
+          test "$(stat -c %a /etc/openhop-geofence)" = 2775
+          test "$(stat -c %a /etc/openhop-geofence/secrets)" = 2755
+          test "$(stat -c %U:%G /etc/openhop-geofence/secrets)" = openhop-geofence:openhop-geofence
+          test "$(stat -c %U:%G:%a /etc/openhop-geofence/config.toml)" = openhop-geofence:openhop-geofence:664
+          su -s /bin/sh -c 'set -e; ls /etc/openhop-geofence /etc/openhop-geofence/secrets >/dev/null; cat /etc/openhop-geofence/config.toml >/dev/null; if test -w /etc/openhop-geofence/config.toml; then exit 1; fi' nobody
+          test -r /usr/share/polkit-1/rules.d/50-openhop-geofence-reboot.rules
+          rpm -q --requires openhop-geofence | grep -qw polkit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm

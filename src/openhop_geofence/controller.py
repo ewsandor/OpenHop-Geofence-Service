@@ -8,9 +8,9 @@ interfaces never touch OpenHop directly; they submit commands with
 
 Safety invariants (see DESIGN.md section 5):
 
-* Safe mode requires ``no_tx`` and is persisted *before* ``no_tx`` is
-  requested. It is never cleared automatically.
-* Ordinary overrides are refused while safe mode is active.
+* Fault safe mode and the persistent operator TX lockout require ``no_tx``.
+  Both are persisted before the mode is requested.
+* Ordinary overrides are refused while either lock is active.
 * A requested mode is never reported as confirmed until readback succeeds.
 * Unexpected external mode changes are a control-conflict fault.
 """
@@ -37,7 +37,10 @@ from .openhop import (
     OpenHopProtocolError,
     RadioSettings,
 )
-from .state import SafeModeLatch, SafeModeStore, atomic_write
+from .state import (
+    SafeModeLatch, SafeModeStore, TxLockout, TxLockoutStore,
+    atomic_write, managed_secret_path,
+)
 from .system import Notifier, RESTART_EXIT_STATUS, request_reboot
 
 log = logging.getLogger(__name__)
@@ -69,9 +72,9 @@ class Listener(Protocol):
     def on_event(self, event: Event) -> None: ...
 
 
-class LastGaspSender(Protocol):
-    def last_gasp_ready(self) -> bool: ...
-    def send_last_gasp(self, text: str) -> None: ...
+class FailureAnnouncementSender(Protocol):
+    def announce_failure_ready(self) -> bool: ...
+    def send_announce_failure(self, text: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,7 @@ class Evaluation:
     observed_age: float | None
     request_mode: str | None
     request_error: str | None
-    zone_ids: tuple[str, ...]
+    zone_names: tuple[str, ...]
     coverage: policy.CoverageResult | None
 
 
@@ -99,6 +102,7 @@ class Controller:
         *,
         gps: GpsdReader,
         safe_store: SafeModeStore,
+        tx_lockout_store: TxLockoutStore,
         make_openhop: Callable[[Config], OpenHopClient],
         make_meshmapper: Callable[[Config], Any] | None = None,
         notifier: Notifier | None = None,
@@ -111,6 +115,7 @@ class Controller:
         self.config_path = Path(config_path)
         self.gps = gps
         self.safe_store = safe_store
+        self.tx_lockout_store = tx_lockout_store
         self._make_openhop = make_openhop
         self._make_meshmapper = make_meshmapper
         self.notifier = notifier or Notifier()
@@ -123,7 +128,7 @@ class Controller:
         self.meshmapper = make_meshmapper(cfg) if make_meshmapper else None
         self.listeners: list[Listener] = []
         self.evaluation_hooks: list[Callable[[Evaluation], None]] = []
-        self.last_gasp: LastGaspSender | None = None
+        self.announce_failure: FailureAnnouncementSender | None = None
         self.status_providers: dict[str, Callable[[], Any]] = {}
 
         self._commands: queue.Queue = queue.Queue(maxsize=32)
@@ -138,6 +143,11 @@ class Controller:
         self.grace_until: float | None = None
         if self.latch.active:
             log.warning("safe mode latch active at startup: %s", self.latch.cause)
+        self.tx_lockout = tx_lockout_store.load()
+        self.tx_lockout_persisted = True
+        self.tx_lockout_persistence_error: str | None = None
+        if self.tx_lockout.active:
+            log.warning("operator TX lockout active at startup: %s", self.tx_lockout.cause)
 
         # Control state
         self.override: str | None = None
@@ -230,6 +240,7 @@ class Controller:
         """True when the confirmed OpenHop mode and policy both permit TX."""
         return (
             not self.latch.active
+            and not self.tx_lockout.active
             and self.observed_mode in ("forward", "monitor")
             and self.desired_mode in ("forward", "monitor")
         )
@@ -267,7 +278,7 @@ class Controller:
             self._evaluate()
         except Exception as exc:
             log.exception("controller evaluation failed")
-            self._on_fault(f"internal error: {exc.__class__.__name__}: {exc}", last_gasp=True)
+            self._on_fault(f"internal error: {exc.__class__.__name__}: {exc}", announce_failure=True)
             # Enforce safe mode even when evaluation keeps failing.
             try:
                 self._enforce_minimal()
@@ -295,6 +306,7 @@ class Controller:
         safe = self.latch.active and self.grace_until is None
         decision = policy.decide(
             safe_mode=safe,
+            tx_lockout=self.tx_lockout.active,
             override=self.override,
             fix_valid=fix is not None,
             zone_match=match,
@@ -364,7 +376,7 @@ class Controller:
             self.observed_mode, self.observed_at = state.mode, now
             self._on_fault(
                 f"control conflict: OpenHop mode changed externally from {previous} to {state.mode}",
-                last_gasp=True,
+                announce_failure=True,
             )
             return False
         if not was_connected:
@@ -417,11 +429,12 @@ class Controller:
         if isinstance(exc, (OpenHopAuthError, OpenHopProtocolError)):
             self._api_failures += 1
             if self._api_failures == API_FAULT_THRESHOLD:
-                self._on_fault(f"OpenHop API fault: {exc}", last_gasp=True)
+                self._on_fault(f"OpenHop API fault: {exc}", announce_failure=True)
 
     def _enforce_minimal(self) -> None:
         """Best-effort ``no_tx`` when the regular evaluation cannot run."""
-        if self.latch.active and self.grace_until is None and self.observed_mode != "no_tx":
+        if ((self.latch.active or self.tx_lockout.active) and self.grace_until is None
+                and self.observed_mode != "no_tx"):
             self.desired_mode = "no_tx"
             self.openhop.set_mode("no_tx")
             self._read_openhop(self.clock())
@@ -444,8 +457,8 @@ class Controller:
         self.latch_persisted, self.persistence_error = True, None
         return True
 
-    def _on_fault(self, cause: str, *, last_gasp: bool) -> None:
-        """Latch safe mode for a service fault, optionally after a last gasp."""
+    def _on_fault(self, cause: str, *, announce_failure: bool) -> None:
+        """Latch safe mode for a service fault, optionally after a failure announcement."""
         if self.latch.active and self.fault == cause:
             return  # Already handled; avoid repeated latching and reports.
         already_active = self.latch.active
@@ -454,23 +467,23 @@ class Controller:
         self.override = None
         persisted = self._set_latch(cause)
         self._emit(ERROR, "fault", f"fault: {cause}; safe mode, requesting no_tx")
-        grace = self.cfg.companion.last_gasp_grace_seconds
+        grace = self.cfg.companion.announce_failure_grace_seconds
         if (
-            last_gasp and persisted and not already_active and grace > 0
-            and self.last_gasp is not None
+            announce_failure and persisted and not already_active and grace > 0
+            and self.announce_failure is not None
             and self.observed_mode in ("forward", "monitor")
-            and self.last_gasp.last_gasp_ready()
+            and self.announce_failure.announce_failure_ready()
         ):
             self.grace_until = self.clock() + grace
             try:
-                self.last_gasp.send_last_gasp(f"FAULT: {cause[:80]}. Entering safe mode (no_tx).")
+                self.announce_failure.send_announce_failure(f"FAULT: {cause[:80]}. Entering safe mode (no_tx).")
             except Exception:
-                log.exception("last-gasp submission failed")
-            log.warning("last-gasp grace period: no_tx within %.0f s", grace)
+                log.exception("failure announcement submission failed")
+            log.warning("failure announcement grace period: no_tx within %.0f s", grace)
 
     def _check_grace(self, now: float) -> None:
         if self.grace_until is not None and now >= self.grace_until:
-            log.info("last-gasp grace period ended; requesting no_tx")
+            log.info("failure announcement grace period ended; requesting no_tx")
             self.grace_until = None
 
     # ------------------------------------------------------------------
@@ -535,7 +548,10 @@ class Controller:
         # Evaluate right away so the result is applied without waiting a tick,
         # and resolve afterwards so callers that refresh see the new status.
         try:
-            if action in ("override", "resume", "disable_tx", "clear", "reload", "save_config"):
+            if action in (
+                "override", "resume", "disable_tx", "clear", "clear_tx_lockout",
+                "reload", "save_config",
+            ):
                 self.step()
         finally:
             fut.set_result(result)
@@ -545,6 +561,8 @@ class Controller:
             raise CommandError("override must be forward or monitor")
         if self.latch.active:
             raise CommandError("safe mode is active; clear safe mode first")
+        if self.tx_lockout.active:
+            raise CommandError("operator TX lockout is active; clear the TX lockout first")
         self.override = mode
         name = "Force Repeat" if mode == "forward" else "Force Monitor"
         self._emit(INFO, "override", f"{name} override set")
@@ -553,6 +571,8 @@ class Controller:
     def _cmd_resume(self) -> str:
         if self.latch.active:
             raise CommandError("safe mode is active; resume cannot clear it")
+        if self.tx_lockout.active:
+            raise CommandError("operator TX lockout is active; clear the TX lockout first")
         self.override = None
         self.hysteresis.reset(self.clock())
         self._emit(INFO, "override", "automatic control resumed")
@@ -561,11 +581,39 @@ class Controller:
     def _cmd_disable_tx(self) -> str:
         self.grace_until = None  # Explicit Disable all TX cancels any grace.
         self.override = None
-        persisted = self._set_latch("Disable all TX requested")
-        self._emit(ERROR, "safe_mode", "Disable all TX: safe mode latched, requesting no_tx")
-        if not persisted:
-            return f"no_tx requested; WARNING: {self.persistence_error}"
-        return "safe mode latched; no_tx requested (confirmation pending readback)"
+        lockout = TxLockout(
+            True, "Disable all TX requested", self.wall() if self.time_trusted() else None
+        )
+        self.tx_lockout = lockout
+        try:
+            self.tx_lockout_store.save(lockout)
+            self.tx_lockout_persisted, self.tx_lockout_persistence_error = True, None
+        except OSError as exc:
+            self.tx_lockout_persisted = False
+            self.tx_lockout_persistence_error = f"could not persist operator TX lockout: {exc}"
+            log.error("%s", self.tx_lockout_persistence_error)
+            self._emit(ERROR, "tx_lockout", self.tx_lockout_persistence_error)
+        self._emit(WARNING, "tx_lockout", "Disable all TX: operator TX lockout latched, requesting no_tx")
+        if not self.tx_lockout_persisted:
+            return f"no_tx requested; WARNING: {self.tx_lockout_persistence_error}"
+        return "operator TX lockout latched; no_tx requested (confirmation pending readback)"
+
+    def _cmd_clear_tx_lockout(self) -> str:
+        if not self.tx_lockout.active:
+            return "operator TX lockout is not active"
+        try:
+            self.tx_lockout_store.save(TxLockout())
+        except OSError as exc:
+            raise CommandError(f"cannot clear TX lockout: state not writable: {exc}") from None
+        self.tx_lockout = TxLockout()
+        self.tx_lockout_persisted, self.tx_lockout_persistence_error = True, None
+        self.hysteresis.reset(self.clock())
+        if self.latch.active:
+            result = "operator TX lockout cleared; fault safe mode remains active"
+        else:
+            result = "operator TX lockout cleared; automatic control resumed"
+        self._emit(INFO, "tx_lockout", result)
+        return result
 
     def _cmd_clear(self) -> str:
         if not self.latch.active:
@@ -599,15 +647,20 @@ class Controller:
         self.override = None
         self._api_failures = 0
         self.hysteresis.reset(self.clock())
-        self._emit(INFO, "safe_mode", "safe mode cleared; automatic control resumed")
-        return "safe mode cleared; automatic control resumed"
+        result = (
+            "safe mode cleared; operator TX lockout remains active"
+            if self.tx_lockout.active
+            else "safe mode cleared; automatic control resumed"
+        )
+        self._emit(INFO, "safe_mode", result)
+        return result
 
     def _cmd_reload(self) -> str:
         try:
             new = config_mod.load_config(self.config_path)
         except (OSError, ConfigError) as exc:
             self.config_error = str(exc)
-            self._on_fault(f"invalid configuration on reload: {str(exc).splitlines()[0]}", last_gasp=True)
+            self._on_fault(f"invalid configuration on reload: {str(exc).splitlines()[0]}", announce_failure=True)
             raise CommandError(f"reload failed; safe mode latched: {exc}") from None
         return self._apply_config(new)
 
@@ -625,9 +678,6 @@ class Controller:
             new = config_mod.parse_config(text)
         except ConfigError as exc:
             raise CommandError(str(exc)) from None
-        local = config_mod.changed_settings(self.cfg, new, config_mod.LOCAL_ONLY_SETTINGS)
-        if local:
-            raise CommandError(f"these settings can only be changed locally: {', '.join(local)}")
         if role != "admin":
             admin = config_mod.changed_settings(self.cfg, new, config_mod.ADMIN_ONLY_SETTINGS)
             if admin:
@@ -639,6 +689,39 @@ class Controller:
             self._emit(ERROR, "persistence", f"configuration save failed: {exc}")
             raise CommandError(f"configuration not saved: {exc}") from None
         return "saved; " + self._apply_config(new)
+
+    def _cmd_update_secret(self, kind: str, value: str) -> str:
+        paths = {
+            "openhop": self.cfg.openhop.api_key_file,
+            "meshmapper": self.cfg.meshmapper.api_key_file,
+            "companion_ble_pin": self.cfg.companion.ble_pin_file,
+        }
+        if kind not in paths:
+            raise CommandError("unknown secret")
+        if (not isinstance(value, str) or not value or len(value) > 4096
+                or value != value.strip() or "\n" in value or "\r" in value or "\0" in value):
+            raise CommandError("secret must be a non-empty single line without surrounding whitespace")
+        try:
+            path = managed_secret_path(self.config_path, paths[kind])
+            other_paths = [self.cfg.web.auth_file, *(v for k, v in paths.items() if k != kind and v)]
+            if any(path.resolve() == Path(other).resolve() for other in other_paths):
+                raise ValueError("secret file path is also used by another credential")
+            atomic_write(path, (value + "\n").encode("utf-8"), mode=0o640)
+        except (OSError, ValueError) as exc:
+            raise CommandError(f"cannot save secret: {exc}") from None
+        if kind == "openhop":
+            self.openhop = self._make_openhop(self.cfg)
+            self._connected = False
+            self._next_poll = 0.0
+        elif kind == "meshmapper" and self._make_meshmapper is not None:
+            if self.meshmapper is not None:
+                self.meshmapper.stop()
+            self.meshmapper = self._make_meshmapper(self.cfg)
+            if self.meshmapper is not None:
+                self.meshmapper.start()
+        else:
+            return "secret saved; restart the service to apply it"
+        return "secret saved and applied; clear safe mode after health checks if needed"
 
     def _apply_config(self, new: Config) -> str:
         """Apply a validated configuration and restart eligibility timers."""
@@ -700,7 +783,12 @@ class Controller:
     def _publish(self, now: float, fix: Fix | None) -> None:
         d = self.decision
         gps = self.gps.status()
-        state = "safe_mode" if self.latch.active else ("override" if self.override else "automatic")
+        state = (
+            "safe_mode" if self.latch.active
+            else "tx_disabled" if self.tx_lockout.active
+            else "override" if self.override
+            else "automatic"
+        )
         snap = {
             "version": __version__,
             "uptime_seconds": int(now - self._started_monotonic),
@@ -731,7 +819,14 @@ class Controller:
                 "since_utc": self.latch.since_utc,
                 "persisted": self.latch_persisted,
                 "persistence_error": self.persistence_error,
-                "last_gasp_seconds": round(self.grace_until - now, 1) if self.grace_until else None,
+                "announce_failure_seconds": round(self.grace_until - now, 1) if self.grace_until else None,
+            },
+            "tx_lockout": {
+                "active": self.tx_lockout.active,
+                "cause": self.tx_lockout.cause,
+                "since_utc": self.tx_lockout.since_utc,
+                "persisted": self.tx_lockout_persisted,
+                "persistence_error": self.tx_lockout_persistence_error,
             },
             "fault": self.fault,
             "gps": {

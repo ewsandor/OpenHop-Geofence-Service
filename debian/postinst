@@ -1,6 +1,5 @@
 #!/bin/sh
-# Create the service account and directories; install the example
-# configuration only if none exists. Never enables or starts the service.
+# Create the service account and directories before the unit starts.
 set -e
 
 NAME=openhop-geofence
@@ -11,13 +10,82 @@ if [ "$1" = "configure" ]; then
         adduser --system --group --home "/var/lib/$NAME" --no-create-home \
             --gecos "OpenHop geofence service" "$NAME"
     fi
-    # Sticky, group-writable directory: the service can atomically replace
-    # config.toml (which it owns) for web edits but not root-owned files.
-    install -d -m 1770 -o root -g "$NAME" "$CONF_DIR"
-    install -d -m 0750 -o root -g "$NAME" "$CONF_DIR/secrets"
-    if [ ! -e "$CONF_DIR/config.toml" ]; then
-        install -m 0640 -o "$NAME" -g "$NAME" \
-            /usr/share/$NAME/config.toml.example "$CONF_DIR/config.toml"
+    install -d -m 2775 -o root -g "$NAME" "$CONF_DIR"
+    install -d -m 2755 -o "$NAME" -g "$NAME" "$CONF_DIR/secrets"
+    if [ -e "$CONF_DIR/config.toml" ] || [ -L "$CONF_DIR/config.toml" ]; then
+        chown -h "$NAME:$NAME" "$CONF_DIR/config.toml"
+        if [ ! -L "$CONF_DIR/config.toml" ]; then
+            chmod 0664 "$CONF_DIR/config.toml"
+        else
+            echo "Warning: check permissions on the config.toml symlink target manually." >&2
+        fi
+    fi
+    if [ -z "${2:-}" ]; then
+        install -d -m 0750 -o "$NAME" -g "$NAME" "/var/lib/$NAME"
+        if [ ! -e "$CONF_DIR/secrets/web-auth" ] && [ ! -L "$CONF_DIR/secrets/web-auth" ] \
+            && [ ! -e "/var/lib/$NAME/web-setup-pending" ] && [ ! -L "/var/lib/$NAME/web-setup-pending" ] \
+            && [ ! -e "/var/lib/$NAME/web-setup-claimed" ] && [ ! -L "/var/lib/$NAME/web-setup-claimed" ]; then
+            install -m 0600 -o "$NAME" -g "$NAME" /dev/null "/var/lib/$NAME/web-setup-pending"
+            python3 - "$CONF_DIR/config.toml" <<'PY'
+import ipaddress
+import subprocess
+import sys
+
+from openhop_geofence.config import ConfigError, load_config
+
+try:
+    web = load_config(sys.argv[1]).web
+except (ConfigError, OSError) as exc:
+    print(f"Cannot determine the web setup address: {exc}", file=sys.stderr)
+    print("Check /etc/openhop-geofence/config.toml before completing browser setup.")
+else:
+    if not web.enabled:
+        print("Web setup is pending, but the web interface is disabled in the configuration.")
+    else:
+        bind = ipaddress.ip_address(web.bind)
+        addresses = []
+        if bind.is_unspecified:
+            try:
+                output = subprocess.run(
+                    ["hostname", "-I"], check=True, capture_output=True, text=True
+                ).stdout
+                for value in output.split():
+                    address = ipaddress.ip_address(value.split("%", 1)[0])
+                    if address.version == bind.version and not address.is_link_local and not address.is_loopback:
+                        addresses.append(address)
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                print(f"Cannot determine local IP addresses: {exc}", file=sys.stderr)
+        else:
+            addresses.append(bind)
+        print("Set the admin password and continue setup on a trusted LAN:")
+        for address in dict.fromkeys(addresses):
+            host = f"[{address}]" if address.version == 6 else str(address)
+            print(f"  http://{host}:{web.port}/")
+        if not addresses:
+            print(f"  http://<device-ip>:{web.port}/  (no suitable address found)")
+        if bind.is_loopback:
+            print("The web interface is bound to loopback and is only accessible locally.")
+        print("Complete setup promptly; anyone with access can claim the admin account.")
+PY
+        fi
+    fi
+    if [ -f "/var/lib/$NAME/safe-mode.json" ] && [ ! -L "/var/lib/$NAME/safe-mode.json" ]; then
+        python3 - <<'PY' || echo "Warning: could not migrate legacy safe-mode state." >&2
+from openhop_geofence.state import SafeModeLatch, SafeModeStore, TxLockout, TxLockoutStore
+
+state_dir = "/var/lib/openhop-geofence"
+store = SafeModeStore(state_dir)
+latch = store.load()
+if latch.active and latch.cause == "initial commissioning":
+    store.save(SafeModeLatch())
+    print("Removed the obsolete initial-commissioning safe-mode latch.")
+elif latch.active and latch.cause == "Disable all TX requested":
+    tx_store = TxLockoutStore(state_dir)
+    if not tx_store.load().active:
+        tx_store.save(TxLockout(True, latch.cause, latch.since_utc))
+    store.save(SafeModeLatch())
+    print("Migrated Disable all TX from safe mode to the operator TX lockout.")
+PY
     fi
 fi
 

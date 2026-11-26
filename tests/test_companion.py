@@ -31,6 +31,7 @@ class FakeCommands:
 class FakeController:
     def __init__(self):
         self.tx_permitted = True
+        self.tx_lockout = SimpleNamespace(active=False)
         self.submitted = []
 
     def submit(self, action, **kw):
@@ -41,7 +42,9 @@ class FakeController:
 
     def status(self):
         return {"control": {"state": "repeat", "desired_mode": "forward"},
-                "openhop": {"observed_mode": "forward"}, "gps": {"fix": True}, "time_trusted": True}
+                "openhop": {"observed_mode": "forward"}, "gps": {"fix": True},
+                "safe_mode": {"active": False}, "tx_lockout": {"active": False},
+                "time_trusted": True}
 
 
 class CompanionTests(unittest.TestCase):
@@ -85,12 +88,24 @@ class CompanionTests(unittest.TestCase):
         self.dm("!geofence status", prefix="deadbeef0000")
         self.assertIn("repeat", self.sent[-1][2])
 
+    def test_txon_clears_the_separate_operator_lockout(self):
+        self.dm("!geofence txon")
+        self.assertEqual([action for action, _ in self.ctl.submitted], ["clear_tx_lockout"])
+
     def test_admin_commands_need_admin_even_with_any_sender(self):
         self.comp = self.make(replace(self.cfg, command_authorization="any_sender"))
         self.dm("!geofence monitor", prefix="deadbeef0000")
         self.dm("!geofence reboot", prefix="deadbeef0001")
         self.assertEqual([a for a, _ in self.ctl.submitted], ["override"])
         self.assertIn("administrator", self.sent[-1][2])
+
+    def test_reboot_requires_fresh_admin_dm(self):
+        self.dm("!geofence reboot", ts=self.clock.wall() - 600)
+        self.assertEqual(self.ctl.submitted, [])
+        self.dm("!geofence reboot")
+        self.assertEqual([action for action, _ in self.ctl.submitted], ["reboot"])
+        self.dm("!geofence reboot")
+        self.assertEqual(len(self.ctl.submitted), 1)
 
     def test_stale_untrusted_and_duplicate_messages(self):
         self.dm("!geofence notx", ts=self.clock.wall() + 600)  # Clock skew beyond limit.
@@ -111,15 +126,25 @@ class CompanionTests(unittest.TestCase):
         asyncio.run(self.comp.handle_channel({"channel_idx": 5, "text": "Bob: !geofence status"}))
         self.assertEqual(len(self.sent), 1)  # Not a report channel: ignored.
 
-    def test_shared_radio_gate_and_last_gasp(self):
+    def test_shared_radio_gate_and_announce_failure(self):
         self.ctl.tx_permitted = False
         self.dm("!geofence status")
         self.assertEqual(self.sent, [])
         self.assertEqual(self.comp.suppressed, 1)
-        asyncio.run(self.comp._last_gasp("x" * 500))
-        asyncio.run(self.comp._last_gasp("again"))  # One burst per process.
+        asyncio.run(self.comp._announce_failure("x" * 500))
+        asyncio.run(self.comp._announce_failure("again"))  # One burst per process.
         self.assertEqual([(k, i) for k, i, _ in self.sent], [("ch", 0), ("ch", 1), ("ch", 0)])
         self.assertTrue(all(len(t) <= MAX_TEXT for _, _, t in self.sent))
+
+    def test_operator_lockout_suppresses_failure_announcement_on_shared_radio(self):
+        self.ctl.tx_lockout.active = True
+        asyncio.run(self.comp._announce_failure("fault"))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.comp.suppressed, 3)
+
+        separate_radio = self.make(replace(self.cfg, shares_openhop_radio=False))
+        asyncio.run(separate_radio._announce_failure("fault"))
+        self.assertEqual(len(separate_radio.mc.commands.sent), 3)
 
 
 if __name__ == "__main__":

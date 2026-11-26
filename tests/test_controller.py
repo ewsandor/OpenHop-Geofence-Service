@@ -4,11 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fakes import AUTH, UNAVAILABLE, FakeClock, FakeGps, FakeOpenHop, MemStore, RecordingNotifier
+from fakes import (
+    AUTH, UNAVAILABLE, FakeClock, FakeGps, FakeOpenHop, MemStore,
+    MemTxLockoutStore, RecordingNotifier,
+)
 
 from openhop_geofence import config
 from openhop_geofence.controller import CommandError, Controller
-from openhop_geofence.state import SafeModeLatch
+from openhop_geofence.state import SafeModeLatch, TxLockout
 
 CONFIG = """
 [policy]
@@ -21,14 +24,14 @@ minimum_monitor_seconds = 30
 allow_reboot = {allow_reboot}
 
 [[zones]]
-id = "repeat-area"
+name = "repeat-area"
 role = "repeat"
 latitude = 40.0
 longitude = -105.0
 radius_m = 1000
 
 [[zones]]
-id = "quiet"
+name = "quiet"
 role = "monitor"
 latitude = 40.0
 longitude = -105.0
@@ -55,6 +58,7 @@ class ControllerTestCase(unittest.TestCase):
         self.gps = FakeGps(self.clock)
         self.oh = FakeOpenHop("monitor")
         self.store = MemStore()
+        self.tx_store = MemTxLockoutStore()
         self.notifier = RecordingNotifier()
         self.reboots = []
         self.events = []
@@ -63,6 +67,7 @@ class ControllerTestCase(unittest.TestCase):
     def make(self):
         c = Controller(
             config.load_config(self.path), self.path, gps=self.gps, safe_store=self.store,
+            tx_lockout_store=self.tx_store,
             make_openhop=lambda cfg: self.oh, notifier=self.notifier, clock=self.clock,
             wall_clock=self.clock.wall, time_trusted=lambda: True,
             reboot=lambda: (self.reboots.append(1) or (True, "ok")),
@@ -88,6 +93,11 @@ class ControllerTestCase(unittest.TestCase):
 
 
 class AutomaticControlTests(ControllerTestCase):
+    def test_missing_startup_gps_uses_monitor_without_safe_mode(self):
+        self.c.step()
+        self.assertFalse(self.c.latch.active)
+        self.assertEqual(self.oh.mode, "monitor")
+
     def test_repeat_zone_after_hysteresis_and_monitor_zone_priority(self):
         self.at(IN_REPEAT)
         self.c.step()
@@ -155,16 +165,28 @@ class LastPolicyTests(ControllerTestCase):
 
 
 class SafeModeTests(ControllerTestCase):
-    def test_disable_tx_latches_and_blocks_overrides(self):
+    def test_disable_tx_uses_operator_lockout_not_safe_mode(self):
         self.at(OUTSIDE)
         self.c.step()
         self.do("disable_tx")
         self.assertEqual(self.oh.mode, "no_tx")
-        self.assertTrue(self.store.latch.active)
+        self.assertFalse(self.store.latch.active)
+        self.assertTrue(self.tx_store.lockout.active)
         with self.assertRaises(CommandError):
             self.do("override", mode="forward")
         with self.assertRaises(CommandError):
             self.do("resume")
+
+    def test_tx_lockout_persists_across_restart_and_clears_separately(self):
+        self.tx_store.lockout = TxLockout(True, "Disable all TX requested", None)
+        self.c = self.make()
+        self.at(IN_REPEAT)
+        self.c.step()
+        self.assertEqual(self.oh.mode, "no_tx")
+        self.assertFalse(self.c.latch.active)
+        self.assertIn("cleared", self.do("clear_tx_lockout"))
+        self.assertFalse(self.tx_store.lockout.active)
+        self.assertEqual(self.oh.mode, "monitor")
 
     def test_latch_persists_across_restart(self):
         self.store.latch = SafeModeLatch(True, "earlier fault", None)
@@ -174,7 +196,7 @@ class SafeModeTests(ControllerTestCase):
         self.assertEqual(self.oh.mode, "no_tx")
 
     def test_clear_requires_checks(self):
-        self.do("disable_tx")
+        self.c._on_fault("test fault", announce_failure=False)
         self.gps.set(None)
         with self.assertRaisesRegex(CommandError, "GPS"):
             self.do("clear")
@@ -196,8 +218,20 @@ class SafeModeTests(ControllerTestCase):
         self.tick()
         self.assertEqual(self.oh.mode, "monitor")
 
+    def test_clearing_safe_mode_does_not_claim_resume_while_tx_locked(self):
+        self.store.latch = SafeModeLatch(True, "earlier fault", None)
+        self.tx_store.lockout = TxLockout(True, "operator request", None)
+        self.c = self.make()
+        self.at(IN_REPEAT)
+        self.c.step()
+        result = self.do("clear")
+        self.assertIn("operator TX lockout remains active", result)
+        self.assertFalse(self.store.latch.active)
+        self.assertTrue(self.tx_store.lockout.active)
+        self.assertEqual(self.oh.mode, "no_tx")
+
     def test_persistence_failure_still_requests_no_tx(self):
-        self.store.fail = True
+        self.tx_store.fail = True
         self.assertIn("WARNING", self.do("disable_tx"))
         self.assertEqual(self.oh.mode, "no_tx")
 
@@ -229,17 +263,17 @@ class SafeModeTests(ControllerTestCase):
         self.tick(30, 2)
         self.assertEqual(self.oh.mode, "monitor")  # Monitor first after reconnect.
 
-    def test_last_gasp_grace_delays_no_tx(self):
+    def test_announce_failure_grace_delays_no_tx(self):
         sent = []
 
         class Gasp:
-            def last_gasp_ready(self):
+            def announce_failure_ready(self):
                 return True
 
-            def send_last_gasp(self, text):
+            def send_announce_failure(self, text):
                 sent.append(text)
 
-        self.c.last_gasp = Gasp()
+        self.c.announce_failure = Gasp()
         self.at(OUTSIDE)
         self.c.step()
         self.oh.mode = "forward"
@@ -251,13 +285,13 @@ class SafeModeTests(ControllerTestCase):
 
     def test_disable_tx_cancels_grace(self):
         class Gasp:
-            def last_gasp_ready(self):
+            def announce_failure_ready(self):
                 return True
 
-            def send_last_gasp(self, text):
+            def send_announce_failure(self, text):
                 pass
 
-        self.c.last_gasp = Gasp()
+        self.c.announce_failure = Gasp()
         self.at(OUTSIDE)
         self.c.step()
         self.oh.mode = "forward"
@@ -272,9 +306,9 @@ class ConfigCommandTests(ControllerTestCase):
         rev = config.config_revision(text)
         with self.assertRaisesRegex(CommandError, "conflict"):
             self.do("save_config", text=text, revision="stale", role="admin")
-        with self.assertRaisesRegex(CommandError, "locally"):
+        with self.assertRaisesRegex(CommandError, "administrator"):
             self.do("save_config", text=text.replace("allow_reboot = false", "allow_reboot = true"),
-                    revision=rev, role="admin")
+                    revision=rev, role="operator")
         with self.assertRaisesRegex(CommandError, "administrator"):
             self.do("save_config", text=text + '\n[openhop]\nbase_url = "http://10.0.0.1:8000"\n',
                     revision=rev, role="operator")
@@ -284,6 +318,56 @@ class ConfigCommandTests(ControllerTestCase):
         new = text.replace('outside = "monitor"', 'outside = "repeat"')
         self.assertIn("applied", self.do("save_config", text=new, revision=rev, role="operator"))
         self.assertEqual(self.c.cfg.policy.outside, "repeat")
+        rev = config.config_revision(new)
+        self.assertIn("applied", self.do("save_config", text=new.replace("allow_reboot = false", "allow_reboot = true"),
+                                         revision=rev, role="admin"))
+        self.assertTrue(self.c.cfg.maintenance.allow_reboot)
+
+    def test_managed_secret_update_and_invalid_paths(self):
+        directory = self.path.parent / "secrets"
+        directory.mkdir()
+        secret = directory / "openhop.key"
+        text = self.path.read_text() + f'\n[openhop]\napi_key_file = "{secret}"\n'
+        self.path.write_text(text)
+        self.c.cfg = config.load_config(self.path)
+        self.c._connected = True
+        loaded_keys = []
+        self.c._make_openhop = lambda cfg: loaded_keys.append(config.read_secret(cfg.openhop.api_key_file)) or self.oh
+        self.assertIn("saved and applied", self.do("update_secret", kind="openhop", value="api-key"))
+        self.assertEqual(secret.read_text(), "api-key\n")
+        self.assertEqual(secret.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(loaded_keys, ["api-key"])
+        self.assertFalse(self.c._connected)
+        with self.assertRaises(CommandError):
+            self.do("update_secret", kind="openhop", value="bad\nkey")
+        self.assertEqual(secret.read_text(), "api-key\n")
+        secret.unlink()
+        outside = self.path.parent / "outside"
+        secret.symlink_to(outside)
+        with self.assertRaisesRegex(CommandError, "non-symlink"):
+            self.do("update_secret", kind="openhop", value="other-key")
+        self.assertFalse(outside.exists())
+
+    def test_meshmapper_secret_replaces_worker(self):
+        directory = self.path.parent / "secrets"
+        directory.mkdir()
+        key = directory / "meshmapper.key"
+        text = self.path.read_text() + f'\n[meshmapper]\napi_key_file = "{key}"\n'
+        self.path.write_text(text)
+        self.c.cfg = config.load_config(self.path)
+        calls = []
+
+        class Worker:
+            def stop(self):
+                calls.append("stopped")
+
+            def start(self):
+                calls.append("started")
+
+        self.c.meshmapper = Worker()
+        self.c._make_meshmapper = lambda cfg: calls.append(config.read_secret(cfg.meshmapper.api_key_file)) or Worker()
+        self.do("update_secret", kind="meshmapper", value="new-key")
+        self.assertEqual(calls, ["stopped", "new-key", "started"])
 
     def test_invalid_reload_latches_safe_mode(self):
         self.path.write_text("[policy]\noutside = 'bogus'\n")
@@ -299,7 +383,7 @@ class MaintenanceTests(ControllerTestCase):
         with self.assertRaises(CommandError):
             self.do("restart")
 
-    def test_reboot_disabled_by_default(self):
+    def test_reboot_can_be_disabled(self):
         with self.assertRaisesRegex(CommandError, "disabled"):
             self.do("reboot")
         self.assertEqual(self.reboots, [])
@@ -312,7 +396,14 @@ class RebootEnabledTests(ControllerTestCase):
         self.do("disable_tx")
         self.assertIn("scheduled", self.do("reboot"))
         self.assertEqual(self.reboots, [1])
-        self.assertTrue(self.store.latch.active)
+        self.assertTrue(self.tx_store.lockout.active)
+        self.assertFalse(self.store.latch.active)
+
+    def test_reboot_defaults_to_enabled(self):
+        self.path.write_text(self.path.read_text().replace("allow_reboot = true", ""))
+        self.c = self.make()
+        self.assertIn("scheduled", self.do("reboot"))
+        self.assertEqual(self.reboots, [1])
 
 
 if __name__ == "__main__":

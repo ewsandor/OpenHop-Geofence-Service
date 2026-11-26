@@ -31,7 +31,6 @@ DEFAULT_RUNTIME_DIR = "/run/openhop-geofence"
 
 COVERAGE_TYPES = ("BIDIR", "TX", "RX", "DISC", "DEAD", "DROP")
 REPORT_LEVELS = ("info", "warning", "error")
-_ZONE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _HEX_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _RADIO_FILTER_RE = re.compile(r"^\d+(\.\d+)?,\d+(\.\d+)?,\d{1,2},\d$")
 
@@ -69,18 +68,12 @@ class PolicyConfig:
 
 
 @dataclass(frozen=True)
-class ExperimentalConfig:
-    weak_coverage_thresholds: bool = False
-    min_snr_db: float | None = None
-    min_effective: float | None = None
-
-
-@dataclass(frozen=True)
 class MeshMapperConfig:
     enabled: bool = False
     api_key_file: str = "/etc/openhop-geofence/secrets/meshmapper.key"
     coverage_url: str = "https://meshmapper.net/coverage.php"
-    region_urls: list[str] = field(default_factory=list)
+    country: str = ""
+    regions: list[str] = field(default_factory=list)
     lookback_days: int = 14
     covered_types: list[str] = field(default_factory=lambda: ["BIDIR", "TX", "RX", "DISC"])
     match_radio: bool = True
@@ -90,7 +83,9 @@ class MeshMapperConfig:
     boundary_refresh_seconds: int = 86400
     max_boundary_age_seconds: int = 604800
     daily_request_budget: int = 80
-    experimental: ExperimentalConfig = field(default_factory=ExperimentalConfig)
+    weak_coverage_thresholds: bool = False
+    min_snr_db: float | None = None
+    min_effective: float | None = None
 
 
 @dataclass(frozen=True)
@@ -123,9 +118,9 @@ class CompanionConfig:
     command_prefix: str = "!geofence"
     command_authorization: str = "admin_keys"
     admin_public_keys: list[str] = field(default_factory=list)
-    last_gasp_enabled: bool = True
-    last_gasp_max_attempts: int = 3
-    last_gasp_grace_seconds: float = 10.0
+    announce_failure_enabled: bool = True
+    announce_failure_max_attempts: int = 3
+    announce_failure_grace_seconds: float = 10.0
     serial_device: str | None = None
     serial_baud: int = 115200
     ble_address: str | None = None
@@ -134,7 +129,7 @@ class CompanionConfig:
 
 @dataclass(frozen=True)
 class MaintenanceConfig:
-    allow_reboot: bool = False
+    allow_reboot: bool = True
 
 
 @dataclass(frozen=True)
@@ -275,8 +270,14 @@ def _validate(cfg: Config, errors: list[str], warnings: list[str]) -> None:
 
     m = cfg.meshmapper
     _check_url(errors, "meshmapper.coverage_url", m.coverage_url, ("https",))
-    for i, url in enumerate(m.region_urls):
-        _check_url(errors, f"meshmapper.region_urls[{i}]", url, ("https",))
+    if m.country and not re.fullmatch(r"[A-Z]{2}", m.country):
+        errors.append("meshmapper.country: expected an uppercase two-letter country code")
+    if m.regions and not m.country:
+        errors.append("meshmapper.country: required when regions are configured")
+    if any(not re.fullmatch(r"[A-Z0-9]{3}", region) for region in m.regions):
+        errors.append("meshmapper.regions: expected uppercase three-character region codes")
+    if len(set(m.regions)) != len(m.regions):
+        errors.append("meshmapper.regions: duplicate region codes")
     _check_range(errors, "meshmapper.lookback_days", m.lookback_days, 1, 365)
     for t in m.covered_types:
         if t not in COVERAGE_TYPES:
@@ -292,13 +293,12 @@ def _validate(cfg: Config, errors: list[str], warnings: list[str]) -> None:
     if m.max_boundary_age_seconds < m.boundary_refresh_seconds:
         errors.append("meshmapper.max_boundary_age_seconds: must be at least boundary_refresh_seconds")
     _check_range(errors, "meshmapper.daily_request_budget", m.daily_request_budget, 1, 1000)
-    x = m.experimental
-    _check_range(errors, "meshmapper.experimental.min_effective", x.min_effective, 0, 3)
-    _check_range(errors, "meshmapper.experimental.min_snr_db", x.min_snr_db, -40, 40)
-    if x.weak_coverage_thresholds:
-        if x.min_snr_db is None and x.min_effective is None:
+    _check_range(errors, "meshmapper.min_effective", m.min_effective, 0, 3)
+    _check_range(errors, "meshmapper.min_snr_db", m.min_snr_db, -40, 40)
+    if m.weak_coverage_thresholds:
+        if m.min_snr_db is None and m.min_effective is None:
             errors.append(
-                "meshmapper.experimental.weak_coverage_thresholds: set min_snr_db and/or min_effective"
+                "meshmapper.weak_coverage_thresholds: set min_snr_db and/or min_effective"
             )
         else:
             warnings.append("MeshMapper weak-coverage thresholds are experimental")
@@ -336,8 +336,8 @@ def _validate(cfg: Config, errors: list[str], warnings: list[str]) -> None:
             break
     if not c.command_prefix.strip() or len(c.command_prefix) > 32:
         errors.append("companion.command_prefix: must be 1-32 characters")
-    _check_range(errors, "companion.last_gasp_max_attempts", c.last_gasp_max_attempts, 0, 3)
-    _check_range(errors, "companion.last_gasp_grace_seconds", c.last_gasp_grace_seconds, 0, 60)
+    _check_range(errors, "companion.announce_failure_max_attempts", c.announce_failure_max_attempts, 0, 3)
+    _check_range(errors, "companion.announce_failure_grace_seconds", c.announce_failure_grace_seconds, 0, 60)
     _check_range(errors, "companion.outage_warning_after_seconds", c.outage_warning_after_seconds, 0, 86400)
     _check_range(errors, "companion.minimum_report_interval_seconds", c.minimum_report_interval_seconds, 0, 86400)
 
@@ -365,7 +365,6 @@ def _load_zones(raw: Any, errors: list[str]) -> tuple[zones_mod.Zone, ...]:
         errors.append("zones: must be an array of tables ([[zones]])")
         return ()
     out: list[zones_mod.Zone] = []
-    seen: set[str] = set()
     for i, z in enumerate(raw):
         name = f"zones[{i}]"
         try:
@@ -373,24 +372,18 @@ def _load_zones(raw: Any, errors: list[str]) -> tuple[zones_mod.Zone, ...]:
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
             continue
-        if out[-1].id in seen:
-            errors.append(f"{name}: duplicate zone id {out[-1].id!r}")
-        seen.add(out[-1].id)
     return tuple(out)
 
 
-_CIRCLE_KEYS = {"id", "name", "role", "shape", "latitude", "longitude", "radius_m"}
-_POLYGON_KEYS = {"id", "name", "role", "shape", "geometry"}
+_CIRCLE_KEYS = {"name", "role", "shape", "latitude", "longitude", "radius_m"}
+_POLYGON_KEYS = {"name", "role", "shape", "geometry"}
 
 
 def parse_zone(z: Any) -> zones_mod.Zone:
     """Validate one zone table and return a Zone. Raises ValueError."""
     if not isinstance(z, dict):
         raise ValueError("must be a table")
-    zid, role, shape = z.get("id"), z.get("role"), z.get("shape", "circle")
-    zname = z.get("name", zid)
-    if not isinstance(zid, str) or not _ZONE_ID_RE.match(zid):
-        raise ValueError("id: required; letters, digits, '.', '_' or '-' (max 64)")
+    zname, role, shape = z.get("name"), z.get("role"), z.get("shape", "circle")
     if not isinstance(zname, str) or not zname.strip() or len(zname) > 100:
         raise ValueError("name: must be 1-100 characters")
     if role not in (zones_mod.ROLE_REPEAT, zones_mod.ROLE_MONITOR):
@@ -404,7 +397,7 @@ def parse_zone(z: Any) -> zones_mod.Zone:
             raise ValueError("latitude/longitude: required, finite and in range")
         if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not 0 < radius <= 100_000:
             raise ValueError("radius_m: must be greater than 0 and at most 100000")
-        return zones_mod.CircleZone(zid, zname, role, float(lat), float(lon), float(radius))
+        return zones_mod.CircleZone(zname, role, float(lat), float(lon), float(radius))
     if shape == "geojson":
         unknown = set(z) - _POLYGON_KEYS
         if unknown:
@@ -414,7 +407,7 @@ def parse_zone(z: Any) -> zones_mod.Zone:
             prepared = zones_mod.build_polygon_shape(_plain(geometry))
         except zones_mod.ShapelyUnavailable as exc:
             raise ValueError(f"polygon zones need Shapely: {exc}") from exc
-        return zones_mod.PolygonZone(zid, zname, role, _plain(geometry), prepared)
+        return zones_mod.PolygonZone(zname, role, _plain(geometry), prepared)
     raise ValueError('shape: must be "circle" or "geojson"')
 
 
@@ -490,17 +483,14 @@ ADMIN_ONLY_SETTINGS = (
     ("openhop", "api_key_file"),
     ("meshmapper", "api_key_file"),
     ("meshmapper", "coverage_url"),
-    ("meshmapper", "region_urls"),
+    ("meshmapper", "country"),
+    ("meshmapper", "regions"),
     ("web",),
     ("companion", "command_authorization"),
     ("companion", "admin_public_keys"),
     ("companion", "ble_pin_file"),
     ("companion", "transport"),
     ("companion", "serial_device"),
-)
-
-#: Settings that no remote interface may change (local file edit only).
-LOCAL_ONLY_SETTINGS = (
     ("maintenance",),
     ("diagnostics", "storage"),
     ("diagnostics", "directory"),

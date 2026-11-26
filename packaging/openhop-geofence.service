@@ -1,8 +1,5 @@
 # systemd unit for the OpenHop geofence service (see DESIGN.md sections 5 and 8).
 #
-# Installed disabled. Review /etc/openhop-geofence/config.toml first, then:
-#   sudo systemctl enable --now openhop-geofence
-#
 # Override settings with "systemctl edit openhop-geofence" rather than editing
 # this file. A virtual environment interpreter (for the optional companion)
 # is configured by overriding ExecStart= in a drop-in; see README.md.
@@ -46,10 +43,9 @@ Environment=OPENBLAS_NUM_THREADS=1
 Environment=PYTHONUNBUFFERED=1
 
 # Filesystem protection. The configuration directory is writable for web
-# edits (atomic replace); secrets stay read-only to the service.
+# edits and restricted service-managed secrets.
 ProtectSystem=strict
 ReadWritePaths=/etc/openhop-geofence
-ReadOnlyPaths=-/etc/openhop-geofence/secrets
 # Uncomment for disk trace recording (diagnostics.storage = "disk"):
 #LogsDirectory=openhop-geofence
 ProtectHome=yes
@@ -59,7 +55,10 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectClock=yes
+# The controller reads clock synchronization with adjtimex/clock_adjtime.
+# ProtectClock blocks even read-only calls; CapabilityBoundingSet= still
+# prevents the service from changing the clock.
+ProtectClock=no
 ProtectHostname=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
@@ -72,7 +71,7 @@ CapabilityBoundingSet=
 # A companion serial transport needs a drop-in; see README.md.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service adjtimex clock_adjtime clock_adjtime64
 
 [Install]
 WantedBy=multi-user.target

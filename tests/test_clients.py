@@ -16,7 +16,9 @@ from fakes import FakeClock, FakeGpsdServer, FakeOpenHopServer
 from openhop_geofence import config
 from openhop_geofence.gpsd import GpsdReader
 from openhop_geofence.openhop import OpenHopAuthError, OpenHopClient, OpenHopProtocolError, OpenHopUnavailable
-from openhop_geofence.state import SafeModeLatch, SafeModeStore, atomic_write
+from openhop_geofence.state import (
+    SafeModeLatch, SafeModeStore, TxLockout, TxLockoutStore, atomic_write,
+)
 from openhop_geofence.system import Notifier
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,12 +30,21 @@ class ConfigTests(unittest.TestCase):
         cfg = config.load_config(EXAMPLE)
         self.assertEqual(cfg.web.port, 8080)
         self.assertEqual(cfg.policy.monitor_mode, "monitor")
+        self.assertFalse(cfg.meshmapper.enabled)
         self.assertEqual(cfg.meshmapper.lookback_days, 14)
 
     def test_empty_file_uses_defaults(self):
         cfg = config.parse_config("")
         self.assertFalse(cfg.web.enabled)
+        self.assertFalse(cfg.meshmapper.enabled)
         self.assertEqual(cfg.zones, ())
+        self.assertTrue(cfg.maintenance.allow_reboot)
+
+    def test_named_zones_need_no_id(self):
+        zone = "[[zones]]\nname='Home zone'\nrole='monitor'\nlatitude=0\nlongitude=0\nradius_m=1\n"
+        cfg = config.parse_config(zone + zone)
+        self.assertEqual([z.name for z in cfg.zones], ["Home zone", "Home zone"])
+        self.assertNotIn("id", cfg.zones[0].to_geojson()["properties"])
 
     def test_rejects_unknown_and_invalid_settings(self):
         for text in (
@@ -43,12 +54,17 @@ class ConfigTests(unittest.TestCase):
             "[policy]\nmonitor_mode = 'forward'\n",
             "[web]\nport = 70000\n",
             "[policy]\nrepeat_delay_seconds = -1\n",
-            "[[zones]]\nid='a'\nrole='repeat'\nlatitude=0\nlongitude=0\nradius_m=1\n"
-            "[[zones]]\nid='a'\nrole='repeat'\nlatitude=0\nlongitude=0\nradius_m=1\n",
+            "[[zones]]\nname='a'\nid='a'\nrole='repeat'\nlatitude=0\nlongitude=0\nradius_m=1\n",
             "not toml =",
         ):
             with self.subTest(text=text), self.assertRaises(config.ConfigError):
                 config.parse_config(text)
+
+    def test_region_scope_is_admin_only(self):
+        old = config.parse_config("[meshmapper]\ncountry='US'\nregions=['ORD']\n")
+        new = config.parse_config("[meshmapper]\ncountry='CA'\nregions=['YOW']\n")
+        self.assertEqual(config.changed_settings(old, new, config.ADMIN_ONLY_SETTINGS),
+                         ["meshmapper.country", "meshmapper.regions"])
 
     def test_disk_trace_requires_limits(self):
         with self.assertRaises(config.ConfigError):
@@ -57,6 +73,26 @@ class ConfigTests(unittest.TestCase):
     def test_missing_meshmapper_credentials_are_not_an_error(self):
         cfg = config.parse_config("[meshmapper]\nenabled = true\napi_key_file = '/nonexistent'\n")
         self.assertTrue(cfg.meshmapper.enabled)
+
+    def test_meshmapper_regions_and_flat_experimental_settings(self):
+        cfg = config.parse_config(
+            "[meshmapper]\ncountry='US'\nregions=['ORD', 'TST']\n"
+            "weak_coverage_thresholds=true\nmin_snr_db=-10\n"
+        )
+        self.assertEqual(cfg.meshmapper.regions, ["ORD", "TST"])
+        self.assertTrue(cfg.meshmapper.weak_coverage_thresholds)
+        self.assertTrue(cfg.warnings)
+        for text in (
+            "[meshmapper]\nregions=['ORD']\n",
+            "[meshmapper]\ncountry='us'\nregions=['ORD']\n",
+            "[meshmapper]\ncountry='US'\nregions=['ORD','ORD']\n",
+            "[meshmapper]\ncountry='US'\nregions=['../']\n",
+            "[meshmapper]\nweak_coverage_thresholds=true\n",
+            "[meshmapper.experimental]\nweak_coverage_thresholds=false\n",
+            "[meshmapper]\nregion_urls=[]\n",
+        ):
+            with self.subTest(text=text), self.assertRaises(config.ConfigError):
+                config.parse_config(text)
 
 
 class OpenHopClientTests(unittest.TestCase):
@@ -148,6 +184,14 @@ class PersistenceTests(unittest.TestCase):
         store.path.write_text("{garbage")
         self.assertTrue(store.load().active)
 
+    def test_operator_tx_lockout_persists_and_corruption_fails_closed(self):
+        store = TxLockoutStore(self.dir)
+        self.assertFalse(store.load().active)
+        store.save(TxLockout(True, "operator request", None))
+        self.assertTrue(TxLockoutStore(self.dir).load().active)
+        store.path.write_text("{garbage")
+        self.assertTrue(store.load().active)
+
 
 class NotifierTests(unittest.TestCase):
     def test_sd_notify_datagrams(self):
@@ -191,8 +235,8 @@ print(json.dumps(out))
 """
 
     def test_core_works_without_optional_packages(self):
-        circle = "[[zones]]\nid='c'\nrole='repeat'\nlatitude=40\nlongitude=-105\nradius_m=10\n"
-        poly = ("[[zones]]\nid='p'\nrole='repeat'\nshape='geojson'\n"
+        circle = "[[zones]]\nname='c'\nrole='repeat'\nlatitude=40\nlongitude=-105\nradius_m=10\n"
+        poly = ("[[zones]]\nname='p'\nrole='repeat'\nshape='geojson'\n"
                 "geometry={type='Polygon', coordinates=[[[0,0],[1,0],[1,1],[0,0]]]}\n")
         env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
         res = subprocess.run([sys.executable, "-c", self.SCRIPT, circle, poly], env=env,

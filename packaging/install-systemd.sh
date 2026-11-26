@@ -3,8 +3,9 @@
 #
 # Debian and Fedora packages do this automatically; use this script only for
 # portable installs. It is idempotent: it creates the service account and
-# directories, installs the unit, and copies the example configuration only
-# if none exists. It never enables or starts the service, never overwrites an
+# directories, installs the unit and reboot authorization rule, and copies
+# the example configuration only if none exists. It never enables or starts
+# the service, never overwrites an
 # existing configuration, and never changes boot or logging settings.
 #
 # Usage (from an extracted source tarball or a git checkout):
@@ -53,13 +54,12 @@ if ! getent passwd "$NAME" >/dev/null; then
     echo "created system account $NAME"
 fi
 
-# /etc/openhop-geofence: root-owned, group-writable with the sticky bit so the
-# service can atomically replace config.toml (which it owns) but cannot
-# remove or replace root-owned files. Secrets are readable, not writable.
-install -d -m 1770 -o root -g "$NAME" "$CONF_DIR"
-install -d -m 0750 -o root -g "$NAME" "$CONF_DIR/secrets"
+# The service and its group can replace the configuration. Secrets are
+# managed by the service but remain unreadable to other local users.
+install -d -m 2775 -o root -g "$NAME" "$CONF_DIR"
+install -d -m 2755 -o "$NAME" -g "$NAME" "$CONF_DIR/secrets"
 if [ ! -e "$CONF_DIR/config.toml" ]; then
-    install -m 0640 -o "$NAME" -g "$NAME" "$SRC/config/config.toml.example" "$CONF_DIR/config.toml"
+    install -m 0664 -o "$NAME" -g "$NAME" "$SRC/config/config.toml.example" "$CONF_DIR/config.toml"
     echo "installed example configuration $CONF_DIR/config.toml"
 fi
 
@@ -67,14 +67,18 @@ fi
 sed "s#^ExecStart=/usr/bin/$NAME #ExecStart=$EXEC #" "$HERE/$NAME.service" > "$UNIT_DIR/$NAME.service.tmp"
 chmod 0644 "$UNIT_DIR/$NAME.service.tmp"
 mv "$UNIT_DIR/$NAME.service.tmp" "$UNIT_DIR/$NAME.service"
+install -D -m 0644 "$HERE/50-$NAME-reboot.rules" \
+    "/usr/share/polkit-1/rules.d/50-$NAME-reboot.rules"
 systemctl daemon-reload
 
 cat <<EOF
 Installed $UNIT_DIR/$NAME.service (not enabled).
 Next steps:
   1. Edit $CONF_DIR/config.toml and add secrets under $CONF_DIR/secrets/
-     (root:$NAME, mode 0640).
+     (root or $NAME:$NAME, mode 0640).
   2. Check it:   sudo -u $NAME $EXEC --check-config --config $CONF_DIR/config.toml
   3. Web login:  sudo $EXEC passwd admin --auth-file $CONF_DIR/secrets/web-auth
   4. Start:      sudo systemctl enable --now $NAME
+Host reboot requires systemd-logind and polkit; set maintenance.allow_reboot
+to false in the local configuration to disable reboot requests.
 EOF
