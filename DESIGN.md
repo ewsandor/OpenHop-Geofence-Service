@@ -475,7 +475,7 @@ is outside the controlled OpenHop instance's `no_tx` guarantee.
 
 ## 6. Zones and coordinate handling
 
-Circles have a unique ID, label, role, WGS84 center, and radius in meters.
+Circles have a name, role, WGS84 center, and radius in meters.
 Use the standard-library haversine distance with the mean Earth radius.
 Points exactly at the radius are inside. The spherical approximation has
 less than 0.5% error; use a small radius margin where a boundary matters.
@@ -688,9 +688,8 @@ max_context_bytes = 8388608 # 8 MiB zone and coverage context
 # max_disk_bytes = 33554432 # 32 MiB total, including context
 # max_age_seconds = 86400 # Retain at most 24 hours
 
-# Repeat [[zones]] for each zone; IDs must be unique.
+# Repeat [[zones]] for each zone.
 [[zones]]
-id = "chicago-repeat"
 name = "Chicago repeat area"
 role = "repeat"
 shape = "circle"
@@ -699,7 +698,6 @@ longitude = -87.6298
 radius_m = 1000.0
 
 [[zones]]
-id = "chicago-monitor"
 name = "Chicago monitor exclusion"
 role = "monitor"
 shape = "circle"
@@ -712,7 +710,7 @@ The example coordinates are illustrative. Polygon zones use
 `shape = "geojson"` and a `geometry` inline table containing GeoJSON type and
 coordinates. Store all zones in the same file for atomic updates.
 
-Validate types, unique zone IDs, ranges, URLs, modes, timers, and unknown
+Validate types, names, ranges, URLs, modes, timers, and unknown
 keys. Reject invalid or unknown settings. Missing optional MeshMapper
 credentials or region codes make the feature unavailable; apply
 `policy.outside`. Store secrets separately in restricted service-managed files;

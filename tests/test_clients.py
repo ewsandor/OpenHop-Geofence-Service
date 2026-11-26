@@ -40,6 +40,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.zones, ())
         self.assertTrue(cfg.maintenance.allow_reboot)
 
+    def test_named_zones_need_no_id(self):
+        zone = "[[zones]]\nname='Home zone'\nrole='monitor'\nlatitude=0\nlongitude=0\nradius_m=1\n"
+        cfg = config.parse_config(zone + zone)
+        self.assertEqual([z.name for z in cfg.zones], ["Home zone", "Home zone"])
+        self.assertNotIn("id", cfg.zones[0].to_geojson()["properties"])
+
     def test_rejects_unknown_and_invalid_settings(self):
         for text in (
             "[policy]\nbogus = 1\n",
@@ -48,8 +54,7 @@ class ConfigTests(unittest.TestCase):
             "[policy]\nmonitor_mode = 'forward'\n",
             "[web]\nport = 70000\n",
             "[policy]\nrepeat_delay_seconds = -1\n",
-            "[[zones]]\nid='a'\nrole='repeat'\nlatitude=0\nlongitude=0\nradius_m=1\n"
-            "[[zones]]\nid='a'\nrole='repeat'\nlatitude=0\nlongitude=0\nradius_m=1\n",
+            "[[zones]]\nname='a'\nid='a'\nrole='repeat'\nlatitude=0\nlongitude=0\nradius_m=1\n",
             "not toml =",
         ):
             with self.subTest(text=text), self.assertRaises(config.ConfigError):
@@ -230,8 +235,8 @@ print(json.dumps(out))
 """
 
     def test_core_works_without_optional_packages(self):
-        circle = "[[zones]]\nid='c'\nrole='repeat'\nlatitude=40\nlongitude=-105\nradius_m=10\n"
-        poly = ("[[zones]]\nid='p'\nrole='repeat'\nshape='geojson'\n"
+        circle = "[[zones]]\nname='c'\nrole='repeat'\nlatitude=40\nlongitude=-105\nradius_m=10\n"
+        poly = ("[[zones]]\nname='p'\nrole='repeat'\nshape='geojson'\n"
                 "geometry={type='Polygon', coordinates=[[[0,0],[1,0],[1,1],[0,0]]]}\n")
         env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
         res = subprocess.run([sys.executable, "-c", self.SCRIPT, circle, poly], env=env,

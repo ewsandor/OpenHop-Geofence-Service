@@ -402,7 +402,7 @@ function renderZones() {
   tbody.replaceChildren();
   zones.forEach((z, i) => {
     const tr = document.createElement("tr");
-    for (const v of [z.id, z.name || z.id, z.role, z.shape || "circle"]) {
+    for (const v of [z.name, z.role, z.shape || "circle"]) {
       const td = document.createElement("td"); td.textContent = v; tr.append(td);
     }
     const td = document.createElement("td");
@@ -425,7 +425,7 @@ $("#zone-form").shape.addEventListener("change", shapeFields);
 function editZone(i) {
   const f = $("#zone-form"), z = zones[i];
   f.index.value = i;
-  f.id.value = z.id; f.name.value = z.name || ""; f.role.value = z.role; f.shape.value = z.shape || "circle";
+  f.name.value = z.name; f.role.value = z.role; f.shape.value = z.shape || "circle";
   f.latitude.value = z.latitude ?? ""; f.longitude.value = z.longitude ?? ""; f.radius_m.value = z.radius_m ?? "";
   f.geometry.value = z.geometry ? JSON.stringify(z.geometry) : "";
   shapeFields();
@@ -437,15 +437,14 @@ $("#zone-reset").addEventListener("click", () => { $("#zone-form").reset(); $("#
 $("#zone-form").addEventListener("submit", (ev) => {
   ev.preventDefault();
   const f = ev.target;
-  const z = { id: f.id.value.trim(), role: f.role.value, shape: f.shape.value };
-  if (f.name.value.trim()) z.name = f.name.value.trim();
+  const z = { name: f.name.value.trim(), role: f.role.value, shape: f.shape.value };
+  if (!z.name) { say("Zone name is required", true); return; }
   if (z.shape === "circle") {
     z.latitude = Number(f.latitude.value); z.longitude = Number(f.longitude.value); z.radius_m = Number(f.radius_m.value);
   } else {
     try { z.geometry = JSON.parse(f.geometry.value); } catch (e) { say("Geometry is not valid JSON", true); return; }
   }
   const i = f.index.value === "" ? -1 : Number(f.index.value);
-  if (zones.some((o, j) => o.id === z.id && j !== i)) { say(`Zone id ${z.id} already exists`, true); return; }
   if (i >= 0) zones[i] = z; else zones.push(z);
   f.index.value = i >= 0 ? i : zones.length - 1;
   renderZones();
@@ -515,7 +514,7 @@ function drawZones() {
   const bounds = [];
   for (const z of zones) {
     const color = z.role === "monitor" ? COLORS.monitor : COLORS.forward;
-    const label = `${z.name || z.id} (${z.role})`;
+    const label = `${z.name} (${z.role})`;
     let layer;
     if ((z.shape || "circle") === "circle" && Number.isFinite(z.latitude)) {
       layer = L.circle([z.latitude, z.longitude], { radius: z.radius_m, color, weight: 2, fillOpacity: 0.1 });

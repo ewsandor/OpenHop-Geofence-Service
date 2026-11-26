@@ -102,10 +102,9 @@ max_context_bytes = 8388608 # 8 MiB zone and coverage context
 # max_disk_bytes = 33554432 # 32 MiB total, including context
 # max_age_seconds = 86400 # Retain at most 24 hours
 
-# Repeat [[zones]] for each zone; IDs must be unique. The web zone editor
+# Repeat [[zones]] for each zone. The web zone editor
 # saves the complete zone list back to this file.
 [[zones]]
-id = "chicago-repeat"
 name = "Chicago repeat area"
 role = "repeat"
 shape = "circle"
@@ -114,7 +113,6 @@ longitude = -87.6298
 radius_m = 1000.0
 
 [[zones]]
-id = "chicago-monitor"
 name = "Chicago monitor exclusion"
 role = "monitor"
 shape = "circle"

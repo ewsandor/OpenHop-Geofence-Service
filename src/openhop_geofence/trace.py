@@ -131,7 +131,7 @@ class TraceRecorder:
             "confirmed_age": ev.observed_age,
             "request": ev.request_mode,
             "request_error": ev.request_error,
-            "zones": list(ev.zone_ids),
+            "zones": list(ev.zone_names),
             "coverage": (
                 {"class": ev.coverage.classification, "grid": ev.coverage.grid_id,
                  "available": ev.coverage.available, "reason": ev.coverage.reason}

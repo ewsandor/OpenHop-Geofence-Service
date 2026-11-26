@@ -13,8 +13,8 @@ except ImportError:
     HAVE_SHAPELY = False
 
 
-def circle(zid, role, lat, lon, r):
-    return config.parse_zone({"id": zid, "role": role, "latitude": lat, "longitude": lon, "radius_m": r})
+def circle(name, role, lat, lon, r):
+    return config.parse_zone({"name": name, "role": role, "latitude": lat, "longitude": lon, "radius_m": r})
 
 
 class ZoneTests(unittest.TestCase):
@@ -35,12 +35,13 @@ class ZoneTests(unittest.TestCase):
 
     def test_invalid_zones_rejected(self):
         bad = [
-            {"id": "x", "role": "repeat", "latitude": 91, "longitude": 0, "radius_m": 10},
-            {"id": "x", "role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 0},
-            {"id": "x", "role": "other", "latitude": 0, "longitude": 0, "radius_m": 10},
-            {"id": "bad id!", "role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 10},
-            {"id": "x", "role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 10, "extra": 1},
-            {"id": "x", "role": "repeat", "latitude": float("nan"), "longitude": 0, "radius_m": 10},
+            {"name": "x", "role": "repeat", "latitude": 91, "longitude": 0, "radius_m": 10},
+            {"name": "x", "role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 0},
+            {"name": "x", "role": "other", "latitude": 0, "longitude": 0, "radius_m": 10},
+            {"role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 10},
+            {"name": " ", "role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 10},
+            {"name": "x", "role": "repeat", "latitude": 0, "longitude": 0, "radius_m": 10, "extra": 1},
+            {"name": "x", "role": "repeat", "latitude": float("nan"), "longitude": 0, "radius_m": 10},
         ]
         for z in bad:
             with self.subTest(z=z), self.assertRaises(ValueError):
@@ -50,7 +51,7 @@ class ZoneTests(unittest.TestCase):
     def test_polygon_with_hole(self):
         outer = [[0, 0], [0.1, 0], [0.1, 0.1], [0, 0.1], [0, 0]]
         hole = [[0.04, 0.04], [0.06, 0.04], [0.06, 0.06], [0.04, 0.06], [0.04, 0.04]]
-        z = config.parse_zone({"id": "p", "role": "monitor", "shape": "geojson",
+        z = config.parse_zone({"name": "p", "role": "monitor", "shape": "geojson",
                                "geometry": {"type": "Polygon", "coordinates": [outer, hole]}})
         self.assertTrue(z.contains(0.02, 0.02))
         self.assertFalse(z.contains(0.05, 0.05))
@@ -60,7 +61,7 @@ class ZoneTests(unittest.TestCase):
     def test_self_intersecting_polygon_rejected(self):
         bowtie = [[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]
         with self.assertRaises(ValueError):
-            config.parse_zone({"id": "p", "role": "monitor", "shape": "geojson",
+            config.parse_zone({"name": "p", "role": "monitor", "shape": "geojson",
                                "geometry": {"type": "Polygon", "coordinates": [bowtie]}})
 
 

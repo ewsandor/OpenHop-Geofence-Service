@@ -24,14 +24,14 @@ minimum_monitor_seconds = 30
 allow_reboot = {allow_reboot}
 
 [[zones]]
-id = "repeat-area"
+name = "repeat-area"
 role = "repeat"
 latitude = 40.0
 longitude = -105.0
 radius_m = 1000
 
 [[zones]]
-id = "quiet"
+name = "quiet"
 role = "monitor"
 latitude = 40.0
 longitude = -105.0

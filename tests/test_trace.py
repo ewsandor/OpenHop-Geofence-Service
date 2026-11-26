@@ -22,7 +22,7 @@ def evaluation(clock, lat, mode="forward", decision=REPEAT, fix=True):
     return Evaluation(
         fix=Fix(lat, -105.0, 3, clock()) if fix else None, decision=decision, desired_mode=mode,
         observed_mode=mode, observed_age=1.0, request_mode=None, request_error=None,
-        zone_ids=("z",), coverage=None,
+        zone_names=("z",), coverage=None,
     )
 
 

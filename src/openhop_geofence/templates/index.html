@@ -95,12 +95,11 @@
     <section class="card">
       <h2>Zones</h2>
       <p class="hint">Monitor zones take priority over repeat zones. Click the map to set a circle center.</p>
-      <table id="zone-table"><thead><tr><th>ID</th><th>Name</th><th>Role</th><th>Shape</th><th></th></tr></thead><tbody></tbody></table>
+      <table id="zone-table"><thead><tr><th>Name</th><th>Role</th><th>Shape</th><th></th></tr></thead><tbody></tbody></table>
       <form id="zone-form">
         <input type="hidden" name="index" value="">
         <div class="fields">
-          <label>ID <input name="id" required pattern="[A-Za-z0-9._-]{1,64}"></label>
-          <label>Name <input name="name" maxlength="100"></label>
+          <label>Name <input name="name" maxlength="100" required></label>
           <label>Role <select name="role"><option value="monitor">monitor</option><option value="repeat">repeat</option></select></label>
           <label>Shape <select name="shape"><option value="circle">circle</option><option value="geojson">polygon (advanced)</option></select></label>
           <label class="circle">Latitude <input name="latitude" type="number" step="any"></label>

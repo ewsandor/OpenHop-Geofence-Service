@@ -218,13 +218,13 @@ this device** to keep the session cookie for up to 30 days; remembered
 sessions survive service restarts and are invalidated when the account
 password changes. Without this option, the browser keeps a session-only cookie.
 
-Each `[[zones]]` table defines one zone; add more tables with unique IDs.
+Each `[[zones]]` table defines one named zone.
 The web zone editor saves the complete edited zone list to the configuration
 file, replacing the existing zone tables rather than simply appending.
 
 The configuration schema has changed during initial testing. If retaining an
-older configuration during a package upgrade, update it to match the current
-example and validate it before restarting the service.
+older configuration during a package upgrade, remove any zone `id` fields,
+give each zone a `name`, and validate it before restarting the service.
 
 ### MeshMapper
 

@@ -31,7 +31,7 @@ minimum_monitor_seconds = 1
 enabled = false
 
 [[zones]]
-id = "trail"
+name = "trail"
 role = "repeat"
 latitude = 40.0
 longitude = -105.0

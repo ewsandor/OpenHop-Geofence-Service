@@ -31,7 +31,6 @@ DEFAULT_RUNTIME_DIR = "/run/openhop-geofence"
 
 COVERAGE_TYPES = ("BIDIR", "TX", "RX", "DISC", "DEAD", "DROP")
 REPORT_LEVELS = ("info", "warning", "error")
-_ZONE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _HEX_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _RADIO_FILTER_RE = re.compile(r"^\d+(\.\d+)?,\d+(\.\d+)?,\d{1,2},\d$")
 
@@ -366,7 +365,6 @@ def _load_zones(raw: Any, errors: list[str]) -> tuple[zones_mod.Zone, ...]:
         errors.append("zones: must be an array of tables ([[zones]])")
         return ()
     out: list[zones_mod.Zone] = []
-    seen: set[str] = set()
     for i, z in enumerate(raw):
         name = f"zones[{i}]"
         try:
@@ -374,24 +372,18 @@ def _load_zones(raw: Any, errors: list[str]) -> tuple[zones_mod.Zone, ...]:
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
             continue
-        if out[-1].id in seen:
-            errors.append(f"{name}: duplicate zone id {out[-1].id!r}")
-        seen.add(out[-1].id)
     return tuple(out)
 
 
-_CIRCLE_KEYS = {"id", "name", "role", "shape", "latitude", "longitude", "radius_m"}
-_POLYGON_KEYS = {"id", "name", "role", "shape", "geometry"}
+_CIRCLE_KEYS = {"name", "role", "shape", "latitude", "longitude", "radius_m"}
+_POLYGON_KEYS = {"name", "role", "shape", "geometry"}
 
 
 def parse_zone(z: Any) -> zones_mod.Zone:
     """Validate one zone table and return a Zone. Raises ValueError."""
     if not isinstance(z, dict):
         raise ValueError("must be a table")
-    zid, role, shape = z.get("id"), z.get("role"), z.get("shape", "circle")
-    zname = z.get("name", zid)
-    if not isinstance(zid, str) or not _ZONE_ID_RE.match(zid):
-        raise ValueError("id: required; letters, digits, '.', '_' or '-' (max 64)")
+    zname, role, shape = z.get("name"), z.get("role"), z.get("shape", "circle")
     if not isinstance(zname, str) or not zname.strip() or len(zname) > 100:
         raise ValueError("name: must be 1-100 characters")
     if role not in (zones_mod.ROLE_REPEAT, zones_mod.ROLE_MONITOR):
@@ -405,7 +397,7 @@ def parse_zone(z: Any) -> zones_mod.Zone:
             raise ValueError("latitude/longitude: required, finite and in range")
         if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not 0 < radius <= 100_000:
             raise ValueError("radius_m: must be greater than 0 and at most 100000")
-        return zones_mod.CircleZone(zid, zname, role, float(lat), float(lon), float(radius))
+        return zones_mod.CircleZone(zname, role, float(lat), float(lon), float(radius))
     if shape == "geojson":
         unknown = set(z) - _POLYGON_KEYS
         if unknown:
@@ -415,7 +407,7 @@ def parse_zone(z: Any) -> zones_mod.Zone:
             prepared = zones_mod.build_polygon_shape(_plain(geometry))
         except zones_mod.ShapelyUnavailable as exc:
             raise ValueError(f"polygon zones need Shapely: {exc}") from exc
-        return zones_mod.PolygonZone(zid, zname, role, _plain(geometry), prepared)
+        return zones_mod.PolygonZone(zname, role, _plain(geometry), prepared)
     raise ValueError('shape: must be "circle" or "geojson"')
 
 

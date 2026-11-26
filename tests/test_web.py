@@ -28,7 +28,7 @@ allow_config_edit = true
 auth_file = "{auth}"
 
 [[zones]]
-id = "home"
+name = "home"
 role = "monitor"
 latitude = 40.0
 longitude = -105.0
@@ -167,13 +167,21 @@ class WebTests(unittest.TestCase):
         c, csrf = self.login()
         self.ctl.config_path.write_text("# keep me\n" + self.ctl.config_path.read_text())
         data = c.get("/api/zones").get_json()
-        zones = data["zones"] + [{"id": "trail", "role": "repeat", "latitude": 40.1,
+        zones = data["zones"] + [{"name": "Trail", "role": "repeat", "latitude": 40.1,
                                   "longitude": -105.1, "radius_m": 200}]
         r = c.post("/api/zones", json={"zones": zones, "revision": data["revision"]}, headers=csrf)
         self.assertEqual(r.status_code, 200, r.get_json())
         saved = self.ctl.config_path.read_text()
         self.assertIn("# keep me", saved)
-        self.assertEqual([z.id for z in config.parse_config(saved).zones], ["home", "trail"])
+        parsed = config.parse_config(saved)
+        self.assertEqual([z.name for z in parsed.zones], ["home", "Trail"])
+        self.assertNotIn('id = "', saved)
+
+    def test_zone_editor_does_not_expose_id(self):
+        response = self.app.test_client().get("/")
+        self.assertNotIn(b'<th>ID</th>', response.data)
+        self.assertNotIn(b'<input name="id"', response.data)
+        self.assertIn(b'<input name="name" maxlength="100" required>', response.data)
 
     def test_session_invalidated_when_account_removed(self):
         c, _ = self.login("operator-password")

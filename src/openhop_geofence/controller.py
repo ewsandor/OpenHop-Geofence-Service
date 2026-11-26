@@ -88,7 +88,7 @@ class Evaluation:
     observed_age: float | None
     request_mode: str | None
     request_error: str | None
-    zone_ids: tuple[str, ...]
+    zone_names: tuple[str, ...]
     coverage: policy.CoverageResult | None
 
 

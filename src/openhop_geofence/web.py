@@ -196,7 +196,7 @@ def replace_zones(text: str, zones: list[dict]) -> str:
         aot = tomlkit.aot()
         for z in zones:
             table = tomlkit.table()
-            for key in ("id", "name", "role", "shape", "latitude", "longitude", "radius_m"):
+            for key in ("name", "role", "shape", "latitude", "longitude", "radius_m"):
                 if key in z:
                     table[key] = z[key]
             if "geometry" in z:
