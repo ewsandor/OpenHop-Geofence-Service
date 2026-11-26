@@ -6,6 +6,7 @@
 # The bridge periodically replaces /run/gpsd-nmea/nmea.txt (tmpfs; never on
 # the SD card) with the most recent few NMEA sentences. When gpsd has no
 # data, the file is removed, so OpenHop does not read a stale position.
+# gpsd's JSON handshake messages are filtered out before publication.
 #
 # Install:
 #   sudo cp gpsd-nmea-bridge.service /etc/systemd/system/
@@ -32,12 +33,14 @@ RuntimeDirectory=gpsd-nmea
 # World-readable so the OpenHop service user can read it.
 RuntimeDirectoryMode=0755
 UMask=0022
-# gpspipe -r: raw NMEA; -n: sentences per snapshot; -x: exit after N seconds.
+# gpspipe -r includes JSON handshakes; keep only lines starting with "$".
+# -n bounds stream records per snapshot; -x exits after N seconds.
 ExecStart=/bin/sh -c 'd="$RUNTIME_DIRECTORY"; while :; do \
-  if gpspipe -r -n 12 -x 5 > "$d/nmea.tmp" 2>/dev/null && [ -s "$d/nmea.tmp" ]; then \
+  if gpspipe -r -n 12 -x 5 > "$d/nmea.raw" && grep "^[$]" "$d/nmea.raw" > "$d/nmea.tmp"; then \
     mv -f "$d/nmea.tmp" "$d/nmea.txt"; \
+    rm -f "$d/nmea.raw"; \
   else \
-    rm -f "$d/nmea.tmp" "$d/nmea.txt"; sleep 2; \
+    rm -f "$d/nmea.raw" "$d/nmea.tmp" "$d/nmea.txt"; sleep 2; \
   fi; \
 done'
 Restart=always

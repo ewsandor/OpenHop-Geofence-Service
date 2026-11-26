@@ -1258,7 +1258,8 @@ GPS sources, but not gpsd directly. Document an independently operated
 gpsd-to-NMEA/file bridge for `gps.source: file`, including bounded output on
 tmpfs (`/run`), stale-data handling, service permissions, and reconnection.
 Do not store bridge data on persistent media. `gpspipe -r` provides NMEA
-output but does not by itself provide a bounded rolling file. Verify the
+output but also includes JSON handshake messages; filter these out before
+publishing a bounded rolling NMEA file. Verify the
 bridge against the installed OpenHop file reader.
 
 Document `advertise_gps_location` and the effect of

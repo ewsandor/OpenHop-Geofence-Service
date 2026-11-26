@@ -383,8 +383,10 @@ For a remote gpsd, set `gpsd.host` and restrict access to port 2947.
 OpenHop reads GPS from a serial device, an NMEA file, or a modem, but not
 from gpsd. Because gpsd owns the receiver,
 [packaging/gpsd-nmea-bridge.service](packaging/gpsd-nmea-bridge.service)
-writes a small, regularly replaced NMEA file on tmpfs (`/run`). Install the
-bridge as described in its header, then set OpenHop's `gps.source: file` and
+writes a small, regularly replaced NMEA file on tmpfs (`/run`), filtering out
+gpsd's JSON handshake messages. Without this filtering, OpenHop can mistake
+the mixed stream for a JSON snapshot and report `JSONDecodeError: Extra data`.
+Install the bridge as described in its header, then set OpenHop's `gps.source: file` and
 `gps.source_path: /run/gpsd-nmea/nmea.txt`. Verify the result with your
 OpenHop release.
 
