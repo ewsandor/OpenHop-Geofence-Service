@@ -141,7 +141,9 @@ Commission off air first:
 1. Set OpenHop to `no_tx`, confirm it persists across an OpenHop restart,
    and confirm its airtime and duty-cycle settings.
 2. On a fresh Debian install, open `http://<device-address>:8080/` from a
-   trusted LAN and choose the password for `admin`. There is no default
+   trusted LAN and choose the password for `admin`. The installer prints
+   available addresses and the configured port; if networking is not yet
+   available, use the device's LAN address once it is connected. There is no default
    password. Anyone who can reach the interface can claim this one-time setup,
    so restrict access with a firewall and complete it immediately; do not
    expose the interface to the internet.
@@ -252,6 +254,10 @@ configuration editor. Administrators can edit `[maintenance]` and disk-trace
 settings; for disk traces, use a service-writable directory such as
 `/var/lib/openhop-geofence/trace`. Set `web.map_enabled = false` on constrained devices;
 map tiles and rendering run in the browser.
+Tile providers receive the interface's origin (address and port) and the
+requested map area. The default OpenStreetMap tile service may block requests
+for policy violations or other reasons; browser privacy settings that suppress
+the Referer header can also prevent tiles from loading.
 
 ### Reboot authorization
 
@@ -261,8 +267,9 @@ shutdown inhibitors still apply. The rule grants this permission to the
 service account itself, not just requests through the interfaces. Portable
 installs also install the rule but require systemd-logind and polkit.
 
-The web interface requires an administrator login and host-name confirmation;
-companion reboot commands require an allowlisted administrator key and a
+The web interface requires an administrator login; clicking **Reboot host**
+immediately requests a reboot without confirmation. Companion reboot commands
+require an allowlisted administrator key and a
 fresh DM. Set `maintenance.allow_reboot = false` in the administrator
 configuration editor to disable reboot requests through both interfaces. Existing
 configurations retain their current setting.

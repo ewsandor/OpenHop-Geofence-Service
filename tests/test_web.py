@@ -70,7 +70,6 @@ class WebTests(unittest.TestCase):
         cfg.write_text(CONFIG.format(auth=auth))
         self.ctl = StubController(cfg)
         self.app = web.create_app(self.ctl)
-        self.hostname = __import__("socket").gethostname()
 
     def login(self, user="admin", password="admin-password"):
         client = self.app.test_client()
@@ -84,6 +83,11 @@ class WebTests(unittest.TestCase):
         for path in ("/api/status", "/api/config", "/api/zones", "/api/map"):
             self.assertEqual(c.get(path).status_code, 401, path)
         self.assertEqual(c.post("/api/login", json={"username": "admin", "password": "x"}).status_code, 401)
+
+    def test_map_page_sends_only_origin_to_https_tile_provider(self):
+        response = self.app.test_client().get("/")
+        self.assertEqual(response.headers["Referrer-Policy"], "strict-origin-when-cross-origin")
+        self.assertIn("https://tile.openstreetmap.org", response.headers["Content-Security-Policy"])
 
     def test_login_throttle(self):
         c = self.app.test_client()
@@ -102,14 +106,14 @@ class WebTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.ctl.calls[-1], ("override", {"mode": "forward", "requester": "web:admin"}))
 
-    def test_maintenance_roles_and_reboot_confirmation(self):
+    def test_maintenance_roles_and_reboot(self):
         c, csrf = self.login("op", "operator-password")
         self.assertEqual(c.post("/api/maintenance", json={"action": "restart"}, headers=csrf).status_code, 403)
+        self.assertEqual(c.post("/api/maintenance", json={"action": "reboot"}, headers=csrf).status_code, 403)
         c, csrf = self.login()
-        r = c.post("/api/maintenance", json={"action": "reboot", "confirm_host": "wrong"}, headers=csrf)
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(c.post("/api/maintenance", json={"action": "reboot"}).status_code, 403)
         self.assertEqual(self.ctl.calls, [])
-        r = c.post("/api/maintenance", json={"action": "reboot", "confirm_host": self.hostname}, headers=csrf)
+        r = c.post("/api/maintenance", json={"action": "reboot"}, headers=csrf)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.ctl.calls[-1][0], "reboot")
 

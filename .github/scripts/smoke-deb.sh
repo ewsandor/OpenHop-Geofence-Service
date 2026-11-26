@@ -6,7 +6,10 @@ export DEBIAN_FRONTEND=noninteractive
 deb=$(readlink -f "$1")
 apt-get update -qq
 # Install without recommendations so missing required dependencies are exposed.
-apt-get install -y -qq --no-install-recommends "$deb"
+apt-get install -y -qq --no-install-recommends "$deb" > /tmp/openhop-geofence-smoke-install.log
+cat /tmp/openhop-geofence-smoke-install.log
+grep -q 'Set the admin password and continue setup on a trusted LAN:' /tmp/openhop-geofence-smoke-install.log
+grep -Eq 'http://[^[:space:]]+:8080/' /tmp/openhop-geofence-smoke-install.log
 apt-get install -y -qq --no-install-recommends systemd >/dev/null
 dpkg -s openhop-geofence | grep -E '^(Status|Version):'
 openhop-geofence --version

@@ -355,10 +355,7 @@ $("#restart").addEventListener("click", () => {
 });
 
 $("#reboot").addEventListener("click", () => {
-  const host = (session && session.hostname) || "";
-  const typed = prompt(`Reboot the host? Type the host name "${host}" to confirm.`);
-  if (typed === null) return;
-  act("Reboot", () => api("api/maintenance", { action: "reboot", confirm_host: typed }));
+  act("Reboot", () => api("api/maintenance", { action: "reboot" }));
 });
 
 // ---------------------------------------------------------------------------

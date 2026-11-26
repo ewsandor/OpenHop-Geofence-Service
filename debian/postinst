@@ -30,7 +30,47 @@ if [ "$1" = "configure" ]; then
             && [ ! -e "/var/lib/$NAME/web-setup-pending" ] && [ ! -L "/var/lib/$NAME/web-setup-pending" ] \
             && [ ! -e "/var/lib/$NAME/web-setup-claimed" ] && [ ! -L "/var/lib/$NAME/web-setup-claimed" ]; then
             install -m 0600 -o "$NAME" -g "$NAME" /dev/null "/var/lib/$NAME/web-setup-pending"
-            echo "Set the administrator password from the web interface on a trusted LAN."
+            python3 - "$CONF_DIR/config.toml" <<'PY'
+import ipaddress
+import subprocess
+import sys
+
+from openhop_geofence.config import ConfigError, load_config
+
+try:
+    web = load_config(sys.argv[1]).web
+except (ConfigError, OSError) as exc:
+    print(f"Cannot determine the web setup address: {exc}", file=sys.stderr)
+    print("Check /etc/openhop-geofence/config.toml before completing browser setup.")
+else:
+    if not web.enabled:
+        print("Web setup is pending, but the web interface is disabled in the configuration.")
+    else:
+        bind = ipaddress.ip_address(web.bind)
+        addresses = []
+        if bind.is_unspecified:
+            try:
+                output = subprocess.run(
+                    ["hostname", "-I"], check=True, capture_output=True, text=True
+                ).stdout
+                for value in output.split():
+                    address = ipaddress.ip_address(value.split("%", 1)[0])
+                    if address.version == bind.version and not address.is_link_local and not address.is_loopback:
+                        addresses.append(address)
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                print(f"Cannot determine local IP addresses: {exc}", file=sys.stderr)
+        else:
+            addresses.append(bind)
+        print("Set the admin password and continue setup on a trusted LAN:")
+        for address in dict.fromkeys(addresses):
+            host = f"[{address}]" if address.version == 6 else str(address)
+            print(f"  http://{host}:{web.port}/")
+        if not addresses:
+            print(f"  http://<device-ip>:{web.port}/  (no suitable address found)")
+        if bind.is_loopback:
+            print("The web interface is bound to loopback and is only accessible locally.")
+        print("Complete setup promptly; anyone with access can claim the admin account.")
+PY
         fi
     fi
 fi

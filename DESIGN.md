@@ -110,7 +110,7 @@ non-OpenHop radio adapters are future enhancements.
 - Support standalone execution and systemd on mainstream Linux distributions.
 - Provide separate **Restart service** and **Reboot host** actions through
   the web interface and companion DMs. Restrict both to administrators.
-  Host reboot is enabled by default; the web interface also requires
+  Host reboot is enabled by default and the web action does not require
   confirmation. A local configuration setting can disable reboot. Neither
   action clears safe mode.
 - Publish a Debian `Architecture: all` package and portable source and wheel
@@ -843,8 +843,8 @@ latch before requesting `no_tx`; report persistence and OpenHop confirmation
 separately.
 
 Provide separate **Restart service** and **Reboot host** controls in the
-authenticated administration interface. Reboot requires an explicit
-confirmation that identifies the local host.
+authenticated administration interface. Reboot requests are submitted
+without a confirmation prompt.
 
 Use authenticated same-origin session cookies, password hashes via Werkzeug,
 CSRF protection for mutations (`X-CSRF-Token` header), origin and host checks, bounded request bodies,
@@ -906,6 +906,9 @@ When maps are enabled:
 - The tile URL and attribution are configurable (`web.tile_url`,
   `web.tile_attribution`). Current coverage squares near the position are
   served by `/api/coverage`.
+- Use `strict-origin-when-cross-origin` referrer policy so HTTPS tile requests
+  receive the page origin, as required by the default OSM tile service,
+  without disclosing page paths or query strings cross-origin.
 - Use attributed OpenStreetMap-compatible tiles from a configurable provider
   permitted for this use; follow its tile policy and display attribution.
 - Do not bulk-download public tiles or promise offline basemaps.
@@ -1287,6 +1290,8 @@ companion messaging) without failing on other installation methods.
 
 For a fresh Debian install, persist a commissioning safe-mode latch before
 enabling and starting the service; it must not automatically enable RF.
+When creating the one-time setup marker, print the configured web port and
+available local addresses or an actionable fallback if none are available.
 OpenHop must already be configured as `no_tx` because the service cannot
 control it before API credentials are supplied. Manage the Debian configuration as a dpkg conffile so local edits
 receive the standard upgrade choices. Byte-compile with `py3compile`
@@ -1376,8 +1381,8 @@ controllable clock, must cover:
     independent companion.
 14. Companion public-key/contact-link display, disabled-module imports,
     transport permissions, and secret redaction.
-15. Maintenance requests from the web and DMs: authorization, web reboot
-    confirmation, duplicate requests, disabled or denied reboot, service-only
+15. Maintenance requests from the web and DMs: authorization, duplicate
+    requests, disabled or denied reboot, service-only
     restart, safe mode persistence, and no TX on a blocked shared radio.
     Mock the OS reboot interface in CI.
 16. Diagnostic tracing: disabled behavior, sampling and immediate events,

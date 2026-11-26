@@ -288,7 +288,7 @@ def create_app(controller: Any, *, trace: Any = None, setup_dir: Path | None = N
             "script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         )
         resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         resp.headers["Cache-Control"] = resp.headers.get("Cache-Control", "no-store")
         return resp
 
@@ -458,8 +458,6 @@ def create_app(controller: Any, *, trace: Any = None, setup_dir: Path | None = N
         if name == "restart":
             return run("restart")
         if name == "reboot":
-            if data.get("confirm_host") != hostname:
-                return error(400, f"type the host name {hostname!r} to confirm the reboot")
             return run("reboot")
         return error(400, "unknown maintenance action")
 
