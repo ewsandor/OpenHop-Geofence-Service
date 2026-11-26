@@ -55,6 +55,7 @@ dpkg-deb -b /tmp/openhop-geofence-smoke-package /tmp/openhop-geofence-smoke-upgr
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore(\"/var/lib/openhop-geofence\").save(SafeModeLatch(True, \"initial commissioning\", None))'" openhop-geofence
 dpkg --force-confold -i /tmp/openhop-geofence-smoke-upgrade.deb
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeStore; assert not SafeModeStore(\"/var/lib/openhop-geofence\").load().active'" openhop-geofence
+grep -q '^# new packaged default$' /etc/openhop-geofence/config.toml.dpkg-dist
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore(\"/var/lib/openhop-geofence\").save(SafeModeLatch(True, \"Disable all TX requested\", None))'" openhop-geofence
 dpkg --force-confold -i "$deb"
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeStore, TxLockoutStore; p=\"/var/lib/openhop-geofence\"; assert not SafeModeStore(p).load().active and TxLockoutStore(p).load().active'" openhop-geofence
@@ -62,16 +63,16 @@ su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import TxLockout, TxLo
 test "$(stat -c %a /etc/openhop-geofence/config.toml)" = 664
 cmp /tmp/openhop-geofence-smoke-auth /etc/openhop-geofence/secrets/web-auth
 grep -q '^# smoke test edit$' /etc/openhop-geofence/config.toml
-grep -q '^# new packaged default$' /etc/openhop-geofence/config.toml.dpkg-dist
-dpkg --force-confnew -i "$deb"
-cmp /usr/share/openhop-geofence/config.toml.example /etc/openhop-geofence/config.toml
+cmp /usr/share/openhop-geofence/config.toml.example /etc/openhop-geofence/config.toml.dpkg-dist
+dpkg --force-confnew -i /tmp/openhop-geofence-smoke-upgrade.deb
+cmp /tmp/openhop-geofence-smoke-package/etc/openhop-geofence/config.toml /etc/openhop-geofence/config.toml
 test "$(stat -c %U /etc/openhop-geofence/config.toml)" = openhop-geofence
 # A deliberately deleted conffile remains absent unless explicitly restored.
 rm /etc/openhop-geofence/config.toml
-dpkg -i "$deb"
+dpkg -i /tmp/openhop-geofence-smoke-upgrade.deb
 test ! -e /etc/openhop-geofence/config.toml
-dpkg --force-confmiss -i "$deb"
-cmp /usr/share/openhop-geofence/config.toml.example /etc/openhop-geofence/config.toml
+dpkg --force-confmiss -i /tmp/openhop-geofence-smoke-upgrade.deb
+cmp /tmp/openhop-geofence-smoke-package/etc/openhop-geofence/config.toml /etc/openhop-geofence/config.toml
 # An auth file deliberately removed after installation is not recreated on upgrade.
 rm /etc/openhop-geofence/secrets/web-auth
 dpkg -i "$deb"
