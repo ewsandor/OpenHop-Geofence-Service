@@ -7,7 +7,7 @@
 # This file is readable by local users; never put secrets in it. Secrets live
 # in restricted files under /etc/openhop-geofence/secrets and are write-only
 # in the web interface.
-# Replace the illustrative zone coordinates before clearing commissioning safe mode.
+# Replace the illustrative zone coordinates before allowing automatic Repeat.
 
 [openhop]
 base_url = "http://127.0.0.1:8000"
@@ -27,7 +27,8 @@ repeat_delay_seconds = 10.0
 minimum_monitor_seconds = 30.0
 
 [meshmapper]
-enabled = true # Set false to disable all MeshMapper requests
+enabled = false # Set true to enable MeshMapper requests
+# Coverage requires a region/group integration key; personal keys do not work.
 api_key_file = "/etc/openhop-geofence/secrets/meshmapper.key"
 coverage_url = "https://meshmapper.net/coverage.php"
 country = "US" # ISO country code used to look up regions

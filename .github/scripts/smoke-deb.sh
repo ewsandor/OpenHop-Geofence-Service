@@ -27,9 +27,11 @@ test "$(stat -c %G /etc/openhop-geofence/config.toml)" = openhop-geofence
 test "$(stat -c %a /etc/openhop-geofence/config.toml)" = 664
 test ! -e /etc/openhop-geofence/secrets/web-auth
 test "$(stat -c %U:%G:%a /var/lib/openhop-geofence/web-setup-pending)" = openhop-geofence:openhop-geofence:600
+su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeStore, TxLockoutStore; p=\"/var/lib/openhop-geofence\"; assert not SafeModeStore(p).load().active and not TxLockoutStore(p).load().active'" openhop-geofence
 su -s /bin/sh -c "python3 -c 'from pathlib import Path; from types import SimpleNamespace; from openhop_geofence.config import load_config; from openhop_geofence.web import create_app; p=Path(\"/etc/openhop-geofence/config.toml\"); c=SimpleNamespace(config_path=p, cfg=load_config(p)); client=create_app(c, setup_dir=Path(\"/var/lib/openhop-geofence\")).test_client(); s=client.get(\"/api/session\").get_json(); assert s[\"setup_required\"]; r=client.post(\"/api/setup\", json={\"password\": \"changed-password\"}, headers={\"X-CSRF-Token\": s[\"csrf\"]}); assert r.status_code == 200, r.get_json()'" openhop-geofence
 test ! -e /var/lib/openhop-geofence/web-setup-pending
 test -e /var/lib/openhop-geofence/web-setup-claimed
+test "$(stat -c %U:%G:%a /var/lib/openhop-geofence/web-session.key)" = openhop-geofence:openhop-geofence:600
 test "$(stat -c %U:%G:%a /etc/openhop-geofence/secrets/web-auth)" = openhop-geofence:openhop-geofence:640
 su -s /bin/sh -c 'set -e; ls /etc/openhop-geofence /etc/openhop-geofence/secrets >/dev/null; cat /etc/openhop-geofence/config.toml >/dev/null; if test -w /etc/openhop-geofence/config.toml || cat /etc/openhop-geofence/secrets/web-auth >/dev/null 2>&1; then exit 1; fi' nobody
 useradd -M -g openhop-geofence geofence-permissions-test
@@ -42,7 +44,7 @@ cp /etc/openhop-geofence/secrets/web-auth /tmp/openhop-geofence-smoke-auth
 dpkg-query -W -f='${Conffiles}\n' openhop-geofence | grep -q '^ /etc/openhop-geofence/config.toml '
 su -s /bin/sh -c 'openhop-geofence --check-config' openhop-geofence
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.config import load_config; assert load_config(\"/etc/openhop-geofence/config.toml\").maintenance.allow_reboot'" openhop-geofence
-su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeStore; s=SafeModeStore(\"/var/lib/openhop-geofence\").load(); assert s.active and s.cause == \"initial commissioning\"'" openhop-geofence
+su -s /bin/sh -c "python3 -c 'from openhop_geofence.config import load_config; assert not load_config(\"/etc/openhop-geofence/config.toml\").meshmapper.enabled'" openhop-geofence
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore(\"/var/lib/openhop-geofence\").save(SafeModeLatch())'" openhop-geofence
 # Simulate an upgrade where both the local config and packaged default changed.
 su -s /bin/sh -c "printf '\n# smoke test edit\n' >> /etc/openhop-geofence/config.toml" openhop-geofence
@@ -50,8 +52,13 @@ chmod 0600 /etc/openhop-geofence/config.toml
 dpkg-deb -R "$deb" /tmp/openhop-geofence-smoke-package
 printf '\n# new packaged default\n' >> /tmp/openhop-geofence-smoke-package/etc/openhop-geofence/config.toml
 dpkg-deb -b /tmp/openhop-geofence-smoke-package /tmp/openhop-geofence-smoke-upgrade.deb
+su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore(\"/var/lib/openhop-geofence\").save(SafeModeLatch(True, \"initial commissioning\", None))'" openhop-geofence
 dpkg --force-confold -i /tmp/openhop-geofence-smoke-upgrade.deb
 su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeStore; assert not SafeModeStore(\"/var/lib/openhop-geofence\").load().active'" openhop-geofence
+su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore(\"/var/lib/openhop-geofence\").save(SafeModeLatch(True, \"Disable all TX requested\", None))'" openhop-geofence
+dpkg --force-confold -i "$deb"
+su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import SafeModeStore, TxLockoutStore; p=\"/var/lib/openhop-geofence\"; assert not SafeModeStore(p).load().active and TxLockoutStore(p).load().active'" openhop-geofence
+su -s /bin/sh -c "python3 -c 'from openhop_geofence.state import TxLockout, TxLockoutStore; TxLockoutStore(\"/var/lib/openhop-geofence\").save(TxLockout())'" openhop-geofence
 test "$(stat -c %a /etc/openhop-geofence/config.toml)" = 664
 cmp /tmp/openhop-geofence-smoke-auth /etc/openhop-geofence/secrets/web-auth
 grep -q '^# smoke test edit$' /etc/openhop-geofence/config.toml

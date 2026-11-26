@@ -16,7 +16,9 @@ from fakes import FakeClock, FakeGpsdServer, FakeOpenHopServer
 from openhop_geofence import config
 from openhop_geofence.gpsd import GpsdReader
 from openhop_geofence.openhop import OpenHopAuthError, OpenHopClient, OpenHopProtocolError, OpenHopUnavailable
-from openhop_geofence.state import SafeModeLatch, SafeModeStore, atomic_write
+from openhop_geofence.state import (
+    SafeModeLatch, SafeModeStore, TxLockout, TxLockoutStore, atomic_write,
+)
 from openhop_geofence.system import Notifier
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,11 +30,13 @@ class ConfigTests(unittest.TestCase):
         cfg = config.load_config(EXAMPLE)
         self.assertEqual(cfg.web.port, 8080)
         self.assertEqual(cfg.policy.monitor_mode, "monitor")
+        self.assertFalse(cfg.meshmapper.enabled)
         self.assertEqual(cfg.meshmapper.lookback_days, 14)
 
     def test_empty_file_uses_defaults(self):
         cfg = config.parse_config("")
         self.assertFalse(cfg.web.enabled)
+        self.assertFalse(cfg.meshmapper.enabled)
         self.assertEqual(cfg.zones, ())
         self.assertTrue(cfg.maintenance.allow_reboot)
 
@@ -172,6 +176,14 @@ class PersistenceTests(unittest.TestCase):
         self.assertFalse(store.load().active)
         store.save(SafeModeLatch(True, "test", None))
         self.assertTrue(SafeModeStore(self.dir).load().active)
+        store.path.write_text("{garbage")
+        self.assertTrue(store.load().active)
+
+    def test_operator_tx_lockout_persists_and_corruption_fails_closed(self):
+        store = TxLockoutStore(self.dir)
+        self.assertFalse(store.load().active)
+        store.save(TxLockout(True, "operator request", None))
+        self.assertTrue(TxLockoutStore(self.dir).load().active)
         store.path.write_text("{garbage")
         self.assertTrue(store.load().active)
 

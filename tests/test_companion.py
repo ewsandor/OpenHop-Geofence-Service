@@ -31,6 +31,7 @@ class FakeCommands:
 class FakeController:
     def __init__(self):
         self.tx_permitted = True
+        self.tx_lockout = SimpleNamespace(active=False)
         self.submitted = []
 
     def submit(self, action, **kw):
@@ -41,7 +42,9 @@ class FakeController:
 
     def status(self):
         return {"control": {"state": "repeat", "desired_mode": "forward"},
-                "openhop": {"observed_mode": "forward"}, "gps": {"fix": True}, "time_trusted": True}
+                "openhop": {"observed_mode": "forward"}, "gps": {"fix": True},
+                "safe_mode": {"active": False}, "tx_lockout": {"active": False},
+                "time_trusted": True}
 
 
 class CompanionTests(unittest.TestCase):
@@ -84,6 +87,10 @@ class CompanionTests(unittest.TestCase):
         self.assertIn("not authorized", self.sent[-1][2])
         self.dm("!geofence status", prefix="deadbeef0000")
         self.assertIn("repeat", self.sent[-1][2])
+
+    def test_txon_clears_the_separate_operator_lockout(self):
+        self.dm("!geofence txon")
+        self.assertEqual([action for action, _ in self.ctl.submitted], ["clear_tx_lockout"])
 
     def test_admin_commands_need_admin_even_with_any_sender(self):
         self.comp = self.make(replace(self.cfg, command_authorization="any_sender"))
@@ -128,6 +135,16 @@ class CompanionTests(unittest.TestCase):
         asyncio.run(self.comp._announce_failure("again"))  # One burst per process.
         self.assertEqual([(k, i) for k, i, _ in self.sent], [("ch", 0), ("ch", 1), ("ch", 0)])
         self.assertTrue(all(len(t) <= MAX_TEXT for _, _, t in self.sent))
+
+    def test_operator_lockout_suppresses_failure_announcement_on_shared_radio(self):
+        self.ctl.tx_lockout.active = True
+        asyncio.run(self.comp._announce_failure("fault"))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.comp.suppressed, 3)
+
+        separate_radio = self.make(replace(self.cfg, shares_openhop_radio=False))
+        asyncio.run(separate_radio._announce_failure("fault"))
+        self.assertEqual(len(separate_radio.mc.commands.sent), 3)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from http.cookies import SimpleCookie
 from pathlib import Path
 
 import fakes  # noqa: F401  (quiet logging)
@@ -66,14 +67,15 @@ class WebTests(unittest.TestCase):
         auth = d / "secrets" / "users"
         web.set_password(str(auth), "admin", "admin", "admin-password")
         web.set_password(str(auth), "op", "operator", "operator-password")
+        self.state_dir = d / "web-state"
         cfg = d / "config.toml"
         cfg.write_text(CONFIG.format(auth=auth))
         self.ctl = StubController(cfg)
-        self.app = web.create_app(self.ctl)
+        self.app = web.create_app(self.ctl, setup_dir=self.state_dir)
 
-    def login(self, user="admin", password="admin-password"):
+    def login(self, password="admin-password", remember=False):
         client = self.app.test_client()
-        r = client.post("/api/login", json={"username": user, "password": password})
+        r = client.post("/api/login", json={"password": password, "remember": remember})
         self.assertEqual(r.status_code, 200, r.get_json())
         return client, {"X-CSRF-Token": r.get_json()["csrf"]}
 
@@ -82,19 +84,55 @@ class WebTests(unittest.TestCase):
         self.assertEqual(c.get("/").status_code, 200)  # Login page only.
         for path in ("/api/status", "/api/config", "/api/zones", "/api/map"):
             self.assertEqual(c.get(path).status_code, 401, path)
-        self.assertEqual(c.post("/api/login", json={"username": "admin", "password": "x"}).status_code, 401)
+        self.assertEqual(c.post("/api/login", json={"password": "x"}).status_code, 401)
 
     def test_map_page_sends_only_origin_to_https_tile_provider(self):
         response = self.app.test_client().get("/")
         self.assertEqual(response.headers["Referrer-Policy"], "strict-origin-when-cross-origin")
         self.assertIn("https://tile.openstreetmap.org", response.headers["Content-Security-Policy"])
 
+    def test_meshmapper_key_requirement_is_displayed(self):
+        response = self.app.test_client().get("/")
+        self.assertIn(b"Coverage requires a MeshMapper integration key; a personal key will not work", response.data)
+        self.assertIn(b"MeshMapper integration key", response.data)
+
     def test_login_throttle(self):
         c = self.app.test_client()
         for _ in range(web.LOGIN_MAX_FAILURES):
-            c.post("/api/login", json={"username": "admin", "password": "wrong"})
-        r = c.post("/api/login", json={"username": "admin", "password": "admin-password"})
+            c.post("/api/login", json={"password": "wrong"})
+        r = c.post("/api/login", json={"password": "admin-password"})
         self.assertEqual(r.status_code, 429)
+
+    def test_password_only_login_selects_matching_account(self):
+        client, _ = self.login("operator-password")
+        self.assertEqual(client.get("/api/session").get_json()["role"], "operator")
+
+    def test_password_only_login_rejects_ambiguous_password(self):
+        web.set_password(self.ctl.cfg.web.auth_file, "op", "operator", "admin-password")
+        response = self.app.test_client().post("/api/login", json={"password": "admin-password"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_remembered_session_survives_app_restart(self):
+        response = self.app.test_client().post(
+            "/api/login", json={"password": "admin-password", "remember": True}
+        )
+        cookie = SimpleCookie(response.headers["Set-Cookie"])["session"]
+        self.assertTrue(cookie["expires"])
+        key_path = self.state_dir / "web-session.key"
+        self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
+        restarted = web.create_app(self.ctl, setup_dir=self.state_dir).test_client(use_cookies=False)
+        restored = restarted.get("/api/session", headers={"Cookie": f"session={cookie.value}"})
+        self.assertEqual(restored.get_json()["user"], "admin")
+
+    def test_default_login_cookie_is_browser_session_only(self):
+        response = self.app.test_client().post("/api/login", json={"password": "admin-password"})
+        cookie = SimpleCookie(response.headers["Set-Cookie"])["session"]
+        self.assertFalse(cookie["expires"])
+
+    def test_web_fails_explicitly_for_insecure_session_key(self):
+        (self.state_dir / "web-session.key").chmod(0o640)
+        with self.assertRaisesRegex(OSError, "mode 0600"):
+            web.create_app(self.ctl, setup_dir=self.state_dir)
 
     def test_csrf_origin_and_host(self):
         c, csrf = self.login()
@@ -107,7 +145,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.ctl.calls[-1], ("override", {"mode": "forward", "requester": "web:admin"}))
 
     def test_maintenance_roles_and_reboot(self):
-        c, csrf = self.login("op", "operator-password")
+        c, csrf = self.login("operator-password")
         self.assertEqual(c.post("/api/maintenance", json={"action": "restart"}, headers=csrf).status_code, 403)
         self.assertEqual(c.post("/api/maintenance", json={"action": "reboot"}, headers=csrf).status_code, 403)
         c, csrf = self.login()
@@ -138,15 +176,15 @@ class WebTests(unittest.TestCase):
         self.assertEqual([z.id for z in config.parse_config(saved).zones], ["home", "trail"])
 
     def test_session_invalidated_when_account_removed(self):
-        c, _ = self.login("op", "operator-password")
+        c, _ = self.login("operator-password")
         Path(self.ctl.cfg.web.auth_file).write_text("")
         self.assertEqual(c.get("/api/status").status_code, 401)
 
     def test_default_password_must_be_changed_and_invalidates_sessions(self):
         auth = self.ctl.cfg.web.auth_file
         web.set_password(auth, "admin", "admin", "geofence")
-        c, csrf = self.login("admin", "geofence")
-        other, _ = self.login("admin", "geofence")
+        c, csrf = self.login("geofence")
+        other, _ = self.login("geofence")
         self.assertTrue(c.get("/api/session").get_json()["change_password_required"])
         self.assertEqual(c.get("/api/status").status_code, 403)
         self.assertEqual(c.post("/api/password", json={"current_password": "geofence", "new_password": "new-password"}).status_code, 403)
@@ -157,10 +195,10 @@ class WebTests(unittest.TestCase):
         self.assertNotIn("new-password", str(r.get_json()))
         self.assertEqual(other.get("/api/session").get_json()["user"], None)
         self.assertEqual(c.get("/api/status").status_code, 401)
-        self.login("admin", "new-password")
+        self.login("new-password")
 
     def test_secret_updates_are_admin_only_and_csrf_protected(self):
-        c, csrf = self.login("op", "operator-password")
+        c, csrf = self.login("operator-password")
         body = {"kind": "openhop", "value": "test-key"}
         self.assertEqual(c.post("/api/secrets", json=body, headers=csrf).status_code, 403)
         self.assertEqual(c.post("/api/password", json={"current_password": "operator-password", "new_password": "new-password"}, headers=csrf).status_code, 403)
@@ -206,7 +244,7 @@ class WebTests(unittest.TestCase):
         self.assertTrue((state / "web-setup-claimed").exists())
         self.assertEqual(second.post("/api/setup", json={"password": "another-password"},
                                      headers={"X-CSRF-Token": other["csrf"]}).status_code, 409)
-        self.assertEqual(first.post("/api/login", json={"username": "admin", "password": "new-password"}).status_code, 200)
+        self.assertEqual(first.post("/api/login", json={"password": "new-password"}).status_code, 200)
         auth.unlink()
         restarted = web.create_app(self.ctl, setup_dir=state).test_client()
         self.assertFalse(restarted.get("/api/session").get_json()["setup_required"])

@@ -22,10 +22,6 @@ if [ "$1" = "configure" ]; then
     fi
     if [ -z "${2:-}" ]; then
         install -d -m 0750 -o "$NAME" -g "$NAME" "/var/lib/$NAME"
-        if [ ! -e "/var/lib/$NAME/safe-mode.json" ] && [ ! -L "/var/lib/$NAME/safe-mode.json" ]; then
-            python3 -c 'from openhop_geofence.state import SafeModeLatch, SafeModeStore; SafeModeStore("/var/lib/openhop-geofence").save(SafeModeLatch(True, "initial commissioning", None))'
-            chown "$NAME:$NAME" "/var/lib/$NAME/safe-mode.json"
-        fi
         if [ ! -e "$CONF_DIR/secrets/web-auth" ] && [ ! -L "$CONF_DIR/secrets/web-auth" ] \
             && [ ! -e "/var/lib/$NAME/web-setup-pending" ] && [ ! -L "/var/lib/$NAME/web-setup-pending" ] \
             && [ ! -e "/var/lib/$NAME/web-setup-claimed" ] && [ ! -L "/var/lib/$NAME/web-setup-claimed" ]; then
@@ -72,6 +68,24 @@ else:
         print("Complete setup promptly; anyone with access can claim the admin account.")
 PY
         fi
+    fi
+    if [ -f "/var/lib/$NAME/safe-mode.json" ] && [ ! -L "/var/lib/$NAME/safe-mode.json" ]; then
+        python3 - <<'PY' || echo "Warning: could not migrate legacy safe-mode state." >&2
+from openhop_geofence.state import SafeModeLatch, SafeModeStore, TxLockout, TxLockoutStore
+
+state_dir = "/var/lib/openhop-geofence"
+store = SafeModeStore(state_dir)
+latch = store.load()
+if latch.active and latch.cause == "initial commissioning":
+    store.save(SafeModeLatch())
+    print("Removed the obsolete initial-commissioning safe-mode latch.")
+elif latch.active and latch.cause == "Disable all TX requested":
+    tx_store = TxLockoutStore(state_dir)
+    if not tx_store.load().active:
+        tx_store.save(TxLockout(True, latch.cause, latch.since_utc))
+    store.save(SafeModeLatch())
+    print("Migrated Disable all TX from safe mode to the operator TX lockout.")
+PY
     fi
 fi
 

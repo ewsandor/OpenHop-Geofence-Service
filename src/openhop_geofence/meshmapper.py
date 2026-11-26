@@ -303,6 +303,13 @@ def _error_for_status(status: int, body: bytes, headers: dict[str, str]) -> Mesh
         return MeshMapperError("daily request quota exhausted", retry_after=midnight - now.timestamp() + 60)
     if status == 429:
         return MeshMapperError("per-IP throttle", retry_after=retry_after or 300)
+    if status == 403 and code == "api_not_allowed":
+        return MeshMapperError(
+            "HTTP 403 api_not_allowed: this key is not authorized for the requested API; "
+            "MeshMapper coverage requires a region- or group-scoped integration key "
+            "with the required endpoint permissions",
+            config_fault=True,
+        )
     if status in (400, 401, 403, 404):
         return MeshMapperError(f"HTTP {status} {code}".strip(), config_fault=True)
     return MeshMapperError(f"HTTP {status} {code}".strip(), retry_after=retry_after)

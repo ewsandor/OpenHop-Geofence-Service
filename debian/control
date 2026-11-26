@@ -24,4 +24,5 @@ Description: geofenced Repeat/Monitor control for an OpenHop MeshCore repeater
  Includes hysteresis, a safe mode latch, an optional web interface with a
  map, and an optional MeshCore companion for reports and commands.
  .
- A fresh installation starts in safe mode for browser commissioning.
+ A fresh installation provides one-time browser setup for the administrator
+ password.

@@ -17,8 +17,8 @@
     <h2>Log in</h2>
     <p id="login-notice" class="hint" hidden></p>
     <form id="login-form">
-      <label>User <input name="username" autocomplete="username" required></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <label><input name="remember" type="checkbox"> Stay signed in on this device for 30 days</label>
       <button type="submit" class="primary">Log in</button>
       <p class="error" id="login-error"></p>
     </form>
@@ -62,8 +62,9 @@
         <button data-action="force_repeat">Force Repeat</button>
         <button data-action="force_monitor">Force Monitor</button>
         <button data-action="disable_tx" class="danger">Disable all TX</button>
+        <button id="clear-tx-lockout" class="primary" hidden>Clear TX lockout</button>
         <button data-action="resume" class="primary">Resume automatic</button>
-        <button data-action="clear">Clear safe mode</button>
+        <button data-action="clear" id="clear-safe-mode">Clear safe mode</button>
         <button data-action="reload">Reload config</button>
       </div>
     </section>
@@ -71,7 +72,9 @@
     <div class="columns">
       <section class="card"><h2>OpenHop</h2><dl id="openhop-list" class="grid"></dl></section>
       <section class="card"><h2>GPS and zones</h2><dl id="gps-list" class="grid"></dl></section>
-      <section class="card"><h2>MeshMapper</h2><dl id="mm-list" class="grid"></dl></section>
+      <section class="card"><h2>MeshMapper</h2><dl id="mm-list" class="grid"></dl>
+        <p class="hint">Optional and disabled by default. Coverage requires a MeshMapper integration key; a personal key will not work.</p>
+      </section>
       <section class="card"><h2>Companion</h2><dl id="comp-list" class="grid"></dl></section>
     </div>
 
@@ -142,11 +145,13 @@
     <section class="card" id="admin-card" hidden>
       <h2>Administration</h2>
       <p class="hint">Credentials are write-only. HTTP does not encrypt them; use a trusted network.</p>
+      <p class="hint">For MeshMapper, obtain a region/group integration key with Coverage access; a personal key will not work.
+        Save the key below, then enable MeshMapper and configure its country and authorized regions in the configuration editor.</p>
       <form id="secret-form">
         <div class="fields">
           <label>Credential <select name="kind">
             <option value="openhop">OpenHop API key</option>
-            <option value="meshmapper">MeshMapper API key</option>
+            <option value="meshmapper">MeshMapper integration key</option>
             <option value="companion_ble_pin">Companion BLE PIN</option>
           </select></label>
           <label>New value <input name="value" type="password" autocomplete="off" required></label>

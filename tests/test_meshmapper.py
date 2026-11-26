@@ -15,6 +15,7 @@ from openhop_geofence.meshmapper import (
     MeshMapperError,
     MeshMapperWorker,
     _SameOriginRedirect,
+    _error_for_status,
     normalize_timestamp,
     parse_boundaries,
     parse_coverage,
@@ -108,6 +109,14 @@ class ParsingTests(unittest.TestCase):
         req = urllib.request.Request("https://meshmapper.net/get_zones.php")
         with self.assertRaises(MeshMapperError):
             handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example/")
+
+    def test_api_not_allowed_explains_required_permissions(self):
+        error = _error_for_status(403, b'{"error":"api_not_allowed"}', {})
+        self.assertTrue(error.config_fault)
+        self.assertIn("requested API", str(error))
+        self.assertIn("region- or group-scoped", str(error))
+        self.assertIn("integration key", str(error))
+        self.assertNotIn("cannot access Coverage", str(error))
 
 
 @unittest.skipUnless(HAVE_SHAPELY, "Shapely not installed")

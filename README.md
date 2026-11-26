@@ -34,7 +34,8 @@ distributions.
   configured fallback.
 - Hysteresis: a dwell time before Repeat and a minimum Monitor time.
 - Monitor applied as OpenHop `monitor` or `no_tx`.
-- Manual overrides and a latched **safe mode** (`no_tx`).
+- Manual overrides, fault **safe mode**, and a separate persistent operator
+  TX lockout (`no_tx`).
 - Optional web interface for status, quick actions, configuration editing,
   and a zone map. It works on desktop and mobile browsers.
 - Optional MeshCore companion for status reports and authorized remote
@@ -49,11 +50,12 @@ distributions.
 | --- | --- | --- |
 | Repeat | `forward` | Repeats traffic. |
 | Monitor | `monitor` (default) or `no_tx` | Does not repeat. OpenHop `monitor` still permits local TX such as adverts and companion messages. Set `policy.monitor_mode = "no_tx"` to disable all TX instead. |
-| Safe mode | `no_tx` | Latched after faults or **Disable all TX**. Only **Clear** releases it, and only after health checks pass. |
+| Safe mode | `no_tx` | Latched after controller faults. **Clear safe mode** releases it only after health checks pass. |
+| TX lockout | `no_tx` | Persistent operator-requested disable. **Clear TX lockout** removes it; policy resumes unless fault safe mode remains active. |
 
-The decision order is: safe mode, manual override, missing or stale GPS
-(Monitor), Monitor zone, Repeat zone, MeshMapper (if enabled and valid), and
-then `policy.outside`.
+The decision order is: fault safe mode, operator TX lockout, manual override,
+missing or stale GPS (Monitor), Monitor zone, Repeat zone, MeshMapper (if
+enabled and valid), and then `policy.outside`.
 
 ## Requirements
 
@@ -95,9 +97,15 @@ installs `/etc/openhop-geofence/config.toml` as a Debian conffile. On upgrade,
 dpkg preserves local edits and prompts if both the local configuration and
 packaged default changed; it does not automatically merge them. A deliberately
 deleted conffile stays deleted unless explicitly restored. A fresh install
-enables and starts the service subject to system policy, with safe mode
-persisted for commissioning. OpenHop must itself be placed in persistent
-`no_tx` first: the geofence cannot stop transmission until it can authenticate.
+enables and starts the service subject to system policy, with no commissioning
+safe-mode latch. Missing or stale GPS applies the configured
+Monitor policy; once a fix is available, zone policy applies normally. If
+OpenHop has a working API connection and GPS fix during setup, it can follow
+the configured zone policy immediately. The service does not hold `no_tx`
+during commissioning. If transmission must remain disabled while setting up,
+stop the geofence service or use OpenHop's independent transmit-disable
+controls; the geofence cannot stop transmission before API authentication
+works.
 
 ### Fedora and RPM-based distributions
 
@@ -136,7 +144,11 @@ openhop-geofence --config ./config.toml --state-dir ./state \
 
 ## Commissioning
 
-Commission off air first:
+Commission off air first. Before the service can authenticate, place OpenHop
+in persistent `no_tx`. The service does not hold `no_tx` during setup: with a
+working API connection and GPS fix, it immediately follows configured zones.
+To guarantee no RF while setting up, stop the geofence service or use
+OpenHop's independent transmit-disable controls.
 
 1. Set OpenHop to `no_tx`, confirm it persists across an OpenHop restart,
    and confirm its airtime and duty-cycle settings.
@@ -147,7 +159,7 @@ Commission off air first:
    password. Anyone who can reach the interface can claim this one-time setup,
    so restrict access with a firewall and complete it immediately; do not
    expose the interface to the internet.
-3. In Administration, enter the OpenHop API key and any MeshMapper key or
+3. In Administration, enter the OpenHop API key and any MeshMapper integration key or
    companion BLE PIN. Values are write-only. Configure endpoints, region,
    zones, and other settings in the configuration editor; replace the example
    Chicago zones. The BLE PIN path must be configured before saving the PIN.
@@ -155,9 +167,9 @@ Commission off air first:
    companion hardware/software; their installation is not performed by this
    service. Restart the geofence service from Administration when requested.
 5. Verify GPS, OpenHop connectivity, zones, the outside policy, and GPS-loss
-   behavior with a dummy load or OpenHop TX disabled. Then use **Clear safe
-   mode** to complete commissioning. Clearing requires a valid configuration,
-   an accessible OpenHop API, and a fresh GPS fix.
+   behavior with a dummy load or OpenHop TX disabled. With no valid GPS fix,
+   the service applies Monitor; a fix enables the configured zone policy
+   without requiring a safe-mode reset.
 
 Existing installations retain their accounts, configuration, and enablement
 state. On non-Debian installations, create an account and start the service
@@ -201,6 +213,11 @@ not automatically secured. Administrators can replace credentials through
 write-only web forms; the service account can also write the secrets directory.
 Web-managed secret paths must be direct, non-symlink files in that directory.
 
+The login accepts a password without a username. Select **Stay signed in on
+this device** to keep the session cookie for up to 30 days; remembered
+sessions survive service restarts and are invalidated when the account
+password changes. Without this option, the browser keeps a session-only cookie.
+
 Each `[[zones]]` table defines one zone; add more tables with unique IDs.
 The web zone editor saves the complete edited zone list to the configuration
 file, replacing the existing zone tables rather than simply appending.
@@ -211,13 +228,24 @@ example and validate it before restarting the service.
 
 ### MeshMapper
 
-MeshMapper is optional. It requires a region or group integration key from
-MeshMapper. Store the key in `/etc/openhop-geofence/secrets/meshmapper.key`
-and set `meshmapper.country` to the two-letter country code and
+MeshMapper is optional and disabled by default. Its Coverage API requires a
+region or group integration key; a personal key will not work for Coverage.
+Ask a regional MeshMapper administrator for an integration key with the
+necessary endpoint permissions. Store the key in
+`/etc/openhop-geofence/secrets/meshmapper.key` or enter it in web
+Administration. Set `meshmapper.enabled = true`, `meshmapper.country` to
+the two-letter country code, and
 `meshmapper.regions` to the authorized three-character region codes, such as
 `country = "US"` and `regions = ["ORD"]` for Chicago. The service resolves
 their URLs using the authenticated MeshMapper region directory. All listed
 regions must be in that country and authorized by the key.
+If MeshMapper reports `HTTP 403 api_not_allowed`, the key is not authorized
+for the requested API, which could be the region directory, boundary, or
+Coverage API. Check the key's endpoint permissions and authorized regions.
+Replace the key in web Administration; the worker restarts automatically.
+
+Existing configuration files are preserved on package upgrades, so an
+installation that already has MeshMapper enabled keeps that setting.
 
 - The service downloads the region dataset at most every
   `refresh_seconds` (default 6 h) within `daily_request_budget`, and looks up
@@ -248,8 +276,8 @@ ssh -L 8080:127.0.0.1:8080 pi@repeater.local
 ```
 
 The interface shows mode, GPS, OpenHop, MeshMapper, and companion status.
-It provides Force Repeat, Force Monitor, Resume, Disable all TX, Clear safe
-mode, restart, and reboot, plus zone editing on the map and a raw
+It provides Force Repeat, Force Monitor, Resume, Disable all TX, Clear TX
+lockout, Clear safe mode, restart, and reboot, plus zone editing on the map and a raw
 configuration editor. Administrators can edit `[maintenance]` and disk-trace
 settings; for disk traces, use a service-writable directory such as
 `/var/lib/openhop-geofence/trace`. Set `web.map_enabled = false` on constrained devices;
@@ -304,7 +332,8 @@ Commands use the prefix `!geofence`, for example `!geofence status`.
 | `help`, `status` | Channel or DM | Command list; concise status |
 | `debug` | Authorized DM | Bounded diagnostic status |
 | `repeat`, `monitor` | Authorized DM | Force Repeat or Monitor |
-| `notx` | Authorized DM | Disable all TX (latches safe mode) |
+| `notx` | Authorized DM | Disable all TX (latches operator TX lockout) |
+| `txon` | Authorized DM | Clear operator TX lockout and resume configured policy |
 | `resume` | Authorized DM | Return to automatic control |
 | `clear` | Authorized DM | Clear safe mode after health checks |
 | `restart`, `reboot` | Administrator DM | Restart the service; reboot the host |

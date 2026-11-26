@@ -110,7 +110,7 @@ function showApp() {
   }
   $("#app-view").hidden = false;
   $("#who").hidden = false;
-  $("#who-name").textContent = `${session.user} (${session.role})`;
+  $("#who-name").textContent = session.role === "admin" ? "Administrator" : "Operator";
   $("#admin-card").hidden = session.role !== "admin";
   startPolling();
   loadZones();
@@ -122,7 +122,7 @@ $("#login-form").addEventListener("submit", async (ev) => {
   const f = ev.target;
   $("#login-error").textContent = "";
   try {
-    session = await api("api/login", { username: f.username.value, password: f.password.value });
+    session = await api("api/login", { password: f.password.value, remember: f.remember.checked });
     f.password.value = "";
     showApp();
   } catch (e) {
@@ -147,7 +147,6 @@ $("#initial-setup-form").addEventListener("submit", async (ev) => {
     await api("api/setup", { password: form.new_password.value });
     form.reset();
     showLogin();
-    $("#login-form").username.value = "admin";
     $("#login-notice").textContent = "Administrator created. Log in.";
     $("#login-notice").hidden = false;
   } catch (e) {
@@ -214,12 +213,15 @@ async function refresh() {
 
 function render(s) {
   const c = s.control || {}, oh = s.openhop || {}, sm = s.safe_mode || {}, g = s.gps || {};
+  const txLockout = s.tx_lockout || {};
   const mode = oh.observed_mode || "unknown";
 
   // Banner for conditions that need attention.
   const alerts = [];
   if (sm.active) alerts.push(`Safe mode active: ${sm.cause}`);
   if (sm.persistence_error) alerts.push(`Safe mode latch not persisted: ${sm.persistence_error}`);
+  if (txLockout.active) alerts.push(`Manual TX lockout active: ${txLockout.cause}`);
+  if (txLockout.persistence_error) alerts.push(`TX lockout not persisted: ${txLockout.persistence_error}`);
   if (s.fault) alerts.push(`Fault: ${s.fault}`);
   if (s.config && s.config.error) alerts.push(`Configuration error: ${s.config.error}`);
   if (s.maintenance && s.maintenance.pending) alerts.push(`Maintenance: ${s.maintenance.pending}`);
@@ -230,6 +232,8 @@ function render(s) {
   badge.textContent = { forward: "REPEAT", monitor: "MONITOR", no_tx: "NO TX" }[mode] || "UNKNOWN";
   badge.className = `badge ${mode}`;
   $("#mode-detail").textContent = `${c.state || "—"}${c.reason ? " — " + c.reason : ""}`;
+  $("#clear-safe-mode").hidden = !sm.active;
+  $("#clear-tx-lockout").hidden = !txLockout.active;
   fill("#mode-list", [
     ["Control", c.state],
     ["Source", c.source],
@@ -344,9 +348,14 @@ function render(s) {
 document.querySelectorAll("button[data-action]").forEach((b) => {
   b.addEventListener("click", () => {
     const name = b.dataset.action;
-    if (name === "disable_tx" && !confirm("Disable all TX and latch safe mode?")) return;
+    if (name === "disable_tx" && !confirm("Disable all TX and keep the operator TX lockout across restarts?")) return;
     act(b.textContent, () => api("api/action", { action: name }));
   });
+});
+
+$("#clear-tx-lockout").addEventListener("click", () => {
+  if (!confirm("Clear the operator TX lockout? Automatic policy may enable Repeat.")) return;
+  act("Clear TX lockout", () => api("api/action", { action: "clear_tx_lockout" }));
 });
 
 $("#restart").addEventListener("click", () => {

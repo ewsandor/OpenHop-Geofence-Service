@@ -42,7 +42,7 @@ RECONNECT_MAX_SECONDS = 300
 CLEAR_CONFIRM_WAIT_SECONDS = 15
 
 CHANNEL_COMMANDS = ("help", "status")
-CONTROL_COMMANDS = ("repeat", "monitor", "notx", "resume", "clear")
+CONTROL_COMMANDS = ("repeat", "monitor", "notx", "txon", "resume", "clear")
 ADMIN_COMMANDS = ("restart", "reboot")
 DM_COMMANDS = CHANNEL_COMMANDS + ("debug",) + CONTROL_COMMANDS + ADMIN_COMMANDS
 
@@ -289,6 +289,11 @@ class Companion:
     async def _send(self, target: str, text: str, *, announce_failure: bool = False) -> bool:
         """Send to ``ch:<idx>`` or ``dm:<key>``. Honors the shared-radio gate."""
         text = _clip(text)
+        lockout = getattr(self.controller, "tx_lockout", None)
+        if self.cfg.shares_openhop_radio and getattr(lockout, "active", False):
+            self.suppressed += 1
+            log.info("companion message suppressed (operator TX lockout): %s", text)
+            return False
         if not announce_failure and not self._tx_allowed():
             self.suppressed += 1
             log.info("companion message suppressed (shared radio TX not permitted): %s", text)
@@ -385,6 +390,8 @@ class Companion:
             parts.append(f"cov {cov.get('classification') or 'n/a'}")
         if s.get("safe_mode", {}).get("active"):
             parts.append("SAFE MODE")
+        if s.get("tx_lockout", {}).get("active"):
+            parts.append("TX LOCKOUT")
         return "; ".join(parts)
 
     def debug_text(self) -> str:
@@ -400,6 +407,9 @@ class Companion:
         ]
         if sm.get("active"):
             parts.append(f"safe: {sm.get('cause')}")
+        if lockout := s.get("tx_lockout", {}):
+            if lockout.get("active"):
+                parts.append(f"tx lockout: {lockout.get('cause')}")
         if not s.get("time_trusted"):
             parts.append("time untrusted")
         return "; ".join(parts)
@@ -522,6 +532,7 @@ class Companion:
             "repeat": ("override", {"mode": "forward"}),
             "monitor": ("override", {"mode": "monitor"}),
             "notx": ("disable_tx", {}),
+            "txon": ("clear_tx_lockout", {}),
             "resume": ("resume", {}),
             "clear": ("clear", {}),
             "restart": ("restart", {}),
@@ -536,7 +547,7 @@ class Companion:
         except Exception as exc:
             result, ok = str(exc) or exc.__class__.__name__, False
         log.info("companion command %s from %s: %s", cmd, prefix, result)
-        if cmd == "clear" and ok:
+        if cmd in ("clear", "txon") and ok:
             # A clear confirmation is sent only once readback permits TX.
             deadline = self.clock() + CLEAR_CONFIRM_WAIT_SECONDS
             while not self._tx_allowed() and self.clock() < deadline:

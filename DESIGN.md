@@ -37,15 +37,15 @@ non-OpenHop radio adapters are future enhancements.
   data is unavailable, apply `policy.outside`.
 - Apply the Monitor policy result as OpenHop `monitor` or `no_tx`, configured
   by `policy.monitor_mode`.
-- Treat missing or stale GPS as Monitor. Manual overrides and safe mode take
-  priority and cannot be cleared by GPS loss.
+- Treat missing or stale GPS as Monitor. Fault safe mode and the operator TX
+  lockout take priority; neither is cleared by GPS loss.
 - Read the actual OpenHop mode at startup. Last mode holds the last confirmed
   mode; if no mode is known, use Monitor.
 - Force Repeat and Force Monitor overrides bypass zones and GPS policy. They
   remain active until Resume automatic or process restart.
-- Disable all TX immediately and persistently. It latches safe mode across
-  restarts. Clearing safe mode is a separate authenticated action that
-  verifies service health.
+- Disable all TX immediately and persistently using a distinct operator
+  lockout that survives restarts. Clearing that lockout is separate from
+  clearing fault safe mode.
 - On unexpected internal faults or invalid control state, persist safe mode,
   request OpenHop `no_tx`, and report the fault. A bounded failure announcement
   notification may precede the mode request under the conditions in
@@ -86,13 +86,13 @@ non-OpenHop radio adapters are future enhancements.
 - Make DM authorization configurable. Recommend an administrator public-key
   allowlist; unrestricted DM control requires explicit configuration.
 - Use the same controller actions and health checks as the web interface.
-  Companion commands cannot bypass safe mode priority.
+  Companion commands cannot bypass fault safe mode or operator TX lockout.
 - Do not transmit advertisements. Publish the companion public key and
   contact link through the LAN interface.
 - A separate companion may continue transmitting while the controlled
   repeater is in `no_tx`. A companion sharing its OpenHop radio is blocked.
-- Keep the shared companion receiving DMs in `no_tx`, including an authorized
-  `clear` command. Transmit no reports, replies, or RF
+- Keep the shared companion receiving DMs in `no_tx`, including authorized
+  `clear` and `txon` commands. Transmit no reports, replies, or RF
   acknowledgements until the clear succeeds and the resulting OpenHop mode
   permits transmission.
 - For eligible service faults, permit at most three failure announcement send submissions
@@ -341,24 +341,27 @@ License references:
   It becomes unknown/stale when connectivity is lost.
 - **Desired mode:** what the policy currently requests; distinct from observed.
 - **Safe mode:** persistent latch requiring `no_tx`, with cause and timestamp.
+- **Operator TX lockout:** persistent user-requested `no_tx`, separate from
+  fault safe mode and cleared explicitly.
 - **Last mode:** hold the most recently confirmed mode, initially read from
   OpenHop. No writes are needed when already in that mode.
 
 Manual controls bypass `monitor_mode`: Force Repeat selects `forward`, Force
 Monitor selects `monitor` (local transmissions remain allowed), and Disable
-all TX selects `no_tx` and latches safe mode.
+all TX selects `no_tx` and latches the operator TX lockout.
 
 ### Decision priority
 
-1. Safe mode, including explicit Disable all TX: `no_tx`.
-2. Manual Force Repeat or Force Monitor override.
-3. Missing/stale GPS: Monitor.
-4. Any containing Monitor zone: Monitor.
-5. Any containing Repeat zone: Repeat.
-6. MeshMapper, when enabled and valid for the current position: covered
+1. Fault safe mode: `no_tx`.
+2. Explicit operator TX lockout: `no_tx`.
+3. Manual Force Repeat or Force Monitor override.
+4. Missing/stale GPS: Monitor.
+5. Any containing Monitor zone: Monitor.
+6. Any containing Repeat zone: Repeat.
+7. MeshMapper, when enabled and valid for the current position: covered
    squares select Monitor; uncovered or weakly covered squares select Repeat
    (section 7).
-7. Outside policy (`policy.outside`): applies when MeshMapper is disabled or
+8. Outside policy (`policy.outside`): applies when MeshMapper is disabled or
    its data is unavailable (not configured, offline without valid cache,
    outside verified scope, or system time is untrusted):
    - Monitor: Monitor (default).
@@ -366,10 +369,11 @@ all TX selects `no_tx` and latches safe mode.
    - Last: hold last confirmed mode; Monitor if none is known.
 
 Zone order does not affect overlap precedence. GPS loss does not release a
-manual override or safe mode.
+manual override, fault safe mode, or operator TX lockout.
 
-Automatic Monitor mapped to `no_tx` does not latch safe mode. Explicit Disable
-all TX and unexpected faults do latch it.
+Automatic Monitor mapped to `no_tx` does not latch either persistent lock.
+Explicit Disable all TX activates the operator TX lockout; unexpected faults
+latch safe mode.
 
 ### Hysteresis
 
@@ -380,8 +384,8 @@ all TX and unexpected faults do latch it.
   30 seconds) since entering Monitor.
 - Any contradictory or invalid fix resets Repeat eligibility.
 - Crossing between zones with the same resulting mode causes no API write.
-- Explicit `no_tx` and safe mode bypass timers. Ordinary overrides also bypass
-  automatic timers, subject to safe mode priority.
+- Explicit `no_tx`, safe mode, and operator TX lockout bypass timers. Ordinary
+  overrides also bypass automatic timers, subject to lockout priority.
 
 Timers use monotonic time and are unaffected by wall-clock adjustments.
 Hysteresis also limits writes to OpenHop's configuration, which is persisted
@@ -396,7 +400,7 @@ on each mode change.
 | MeshMapper enabled but not configured, unsupported key filters, unknown/out-of-scope region, or response exceeds resource limits | Report MeshMapper unavailable and apply `policy.outside`. |
 | MeshMapper disabled | No MeshMapper network activity; `policy.outside` decides outside zones. |
 | Controller loop stalls under systemd | Stop watchdog notifications; systemd terminates and restarts the service. Startup reads the OpenHop mode and applies Monitor until Repeat is eligible. |
-| OpenHop unreachable | Actual mode unknown; retain intent and retry with backoff. On reconnect, apply Monitor before re-enabling automatic Repeat. An active safe mode instead requires `no_tx`. |
+| OpenHop unreachable | Actual mode unknown; retain intent and retry with backoff. On reconnect, apply Monitor before re-enabling automatic Repeat. An active safe mode or operator TX lockout instead requires `no_tx`. |
 | Unexpected internal exception, invalid active configuration/state, unknown OpenHop mode, or persistent API schema/authentication error | Persist safe mode, attempt `no_tx`, report the fault, and prohibit ordinary overrides. |
 | Invalid web configuration or action | Reject with an explicit error; retain the valid running configuration. |
 | Incomplete network download | Reject the new cache; retain valid old cache and retry conservatively. Repeated complete-but-invalid responses are an integration fault. |
@@ -411,7 +415,9 @@ availability is not required because `policy.outside` applies when coverage
 is unavailable. The action clears the latch and ordinary override, then
 restarts eligibility timers. It fails if any required health check fails.
 Resume automatic clears an ordinary override and restarts eligibility
-timers, but cannot clear safe mode.
+timers, but cannot clear either persistent lock. **Clear TX lockout** removes
+only the operator lockout and may resume configured policy, including Repeat;
+it cannot clear fault safe mode.
 
 The companion interface uses these same checks. Channel messages cannot
 change modes or clear safe mode. An eligible failure announcement notification introduces
@@ -456,8 +462,9 @@ systemd restart does not prove that RF transmission has stopped.
 
 Commission OpenHop in persisted `no_tx` before first start. On graceful
 shutdown, request the configured Monitor mode without delaying shutdown
-indefinitely; active safe mode continues to require `no_tx`. Process
-restart clears ordinary overrides but retains safe mode. Abrupt termination,
+indefinitely; active safe mode or operator TX lockout continues to require
+`no_tx`. Process restart clears ordinary overrides but retains both latches.
+Abrupt termination,
 including a watchdog timeout, cannot guarantee a final mode change; the
 restarted service applies the startup policy.
 
@@ -612,7 +619,7 @@ repeat_delay_seconds = 10.0
 minimum_monitor_seconds = 30.0
 
 [meshmapper]
-enabled = true # Set false to disable all MeshMapper requests
+enabled = false # Set true to enable MeshMapper requests
 api_key_file = "/etc/openhop-geofence/secrets/meshmapper.key"
 coverage_url = "https://meshmapper.net/coverage.php"
 country = "US"
@@ -727,7 +734,8 @@ The installer creates an unprivileged `openhop-geofence` account:
   by the service group. Files are mode 0640 for service-group access;
   the directory is mode 2755. Administrators must restrict existing secret
   files before making the directory listable.
-- Durable state (safe mode latch and one-time setup marker) under `/var/lib/openhop-geofence`.
+- Durable state (fault safe-mode latch, operator TX lockout, session key, and
+  one-time setup marker) under `/var/lib/openhop-geofence`.
 - Coverage snapshot under `/var/cache/openhop-geofence`.
 - Runtime lock, status, and MeshMapper request accounting under the
   RAM-backed `/run/openhop-geofence` (systemd `RuntimeDirectory=` with
@@ -746,7 +754,7 @@ writes to persistent storage. Durable writes are otherwise event-driven:
 | Diagnostic trace and context, when enabled | Bounded process memory | RAM only unless disk recording is explicitly configured |
 | Companion reports, command deduplication, and pending replies | Process memory | Never written to disk |
 | Lock, request accounting, backoff | `/run` (tmpfs) | RAM only |
-| Web login sessions | Signed cookie, in-memory key | Never; logins reset on restart |
+| Web login sessions | Signed cookie, persistent key in `/var/lib/openhop-geofence/web-session.key` | Key is written once; optional remembered sessions expire after 30 days or on password change |
 | Safe mode latch | `/var/lib` | Only when set or cleared |
 | Coverage snapshot | `/var/cache` | Only when validated content changes (at most a few times/day) |
 | Config file | `/etc` | Only on explicit user save |
@@ -796,7 +804,7 @@ service restart; report this when saving.
 
 Both interfaces submit the same maintenance requests to the controller.
 Accept only one pending request and log the requester, action, and outcome.
-Use graceful shutdown with bounded cleanup. Preserve the safe mode latch
+Use graceful shutdown with bounded cleanup. Preserve both persistent latches
 and do not lift `no_tx` to complete maintenance or send a reply. Restart
 clears ordinary overrides and runs the normal startup checks.
 
@@ -825,7 +833,7 @@ pool. Do not use Flask's development server in service mode.
 
 Display:
 
-- Automatic/override/safe mode state and reason.
+- Automatic/override/fault-safe-mode/operator-lockout state and reason.
 - Observed OpenHop mode, age, desired mode, and pending/error state.
 - GPS fix quality, age, location, and matched zone names.
 - Hysteresis countdown.
@@ -837,19 +845,25 @@ Display:
 - Diagnostic recording state, retention limits, dropped records, and export
   availability.
 
-Provide Force Repeat, Force Monitor, Disable all TX, Resume automatic, Clear
-safe mode, reload, and validated configuration editing. Persist the safe mode
-latch before requesting `no_tx`; report persistence and OpenHop confirmation
-separately.
+Provide Force Repeat, Force Monitor, Disable all TX, Clear TX lockout, Resume
+automatic, Clear safe mode, reload, and validated configuration editing.
+Persist each latch before requesting `no_tx`; report persistence and OpenHop
+confirmation separately.
 
 Provide separate **Restart service** and **Reboot host** controls in the
 authenticated administration interface. Reboot requests are submitted
 without a confirmation prompt.
 
-Use authenticated same-origin session cookies, password hashes via Werkzeug,
-CSRF protection for mutations (`X-CSRF-Token` header), origin and host checks, bounded request bodies,
-and bounded login attempts. Require authentication on localhost except for
-the one-time administrator setup.
+Use password-only login, password hashes via Werkzeug, authenticated
+same-origin session cookies, CSRF protection for mutations (`X-CSRF-Token`
+header), origin and host checks, bounded request bodies, and bounded login
+attempts. A password must identify exactly one stored account. Offer an
+optional 30-day persistent cookie; sign sessions with a service-owned key
+under the state directory so remembered sessions survive process restarts.
+Keep the key mode 0600 and fail web startup explicitly if it is missing,
+invalid, or insecure; mode-control service operation must continue. Invalidate
+sessions after a password change. Require authentication on localhost except
+for the one-time administrator setup.
 Accounts are stored one per line as `user:role:hash` in the service-managed
 `web.auth_file`, created with `openhop-geofence passwd USER [--role
 admin|operator]`. A fresh Debian install with no account file creates a durable
@@ -1061,7 +1075,8 @@ command grammar:
 | `debug` | Authorized DM | Return bounded diagnostic status without secrets |
 | `repeat` | Authorized DM | Force Repeat |
 | `monitor` | Authorized DM | Force OpenHop `monitor` |
-| `notx` | Authorized DM | Disable all TX: latch safe mode and request `no_tx` |
+| `notx` | Authorized DM | Disable all TX: latch operator TX lockout and request `no_tx` |
+| `txon` | Authorized DM | Clear operator TX lockout; resume policy unless fault safe mode remains active |
 | `resume` | Authorized DM | Clear an ordinary override and resume automatic control |
 | `clear` | Authorized DM | Clear safe mode after controller health checks |
 | `restart` | Administrator DM | Restart the geofence service only |
@@ -1091,8 +1106,9 @@ chrony with gpsd (section 5) to permit remote recovery without internet
 access.
 
 Return controller results rather than assuming that a queued request
-succeeded. `resume` cannot clear safe mode; `clear` uses the same
-health checks as the web interface. Do not expose shell execution, arbitrary
+succeeded. `resume` cannot clear either lock; `txon` clears operator lockout,
+and `clear` uses the same health checks as the web interface for fault safe
+mode. Do not expose shell execution, arbitrary
 configuration editing, or MeshCore CLI passthrough.
 
 ### Shared-radio `no_tx` and failure announcement notifications
@@ -1100,12 +1116,12 @@ configuration editing, or MeshCore CLI passthrough.
 Set `shares_openhop_radio` explicitly. A separate companion may continue to
 report and receive commands while the controlled repeater is in `no_tx`.
 On a shared OpenHop instance, `no_tx` blocks companion transmissions but does
-not prevent receiving a DM to clear safe mode.
+not prevent receiving a DM to clear safe mode or operator TX lockout.
 
 Keep the companion connection and incoming-message processing active in
-`no_tx`. Authenticate and validate `clear` before submitting it to
-the controller. Receiving a command alone does not release safe mode: the
-clear must pass the controller's health checks.
+`no_tx`. Authenticate and validate `clear`/`txon` before submitting them to
+the controller. Receiving a command alone does not release fault safe mode:
+`clear` must pass the controller's health checks.
 
 While the shared radio is in `no_tx`, suppress all outgoing reports, command
 replies, and RF acknowledgements, including rejection or failure messages.
@@ -1118,7 +1134,7 @@ companion radio.
 
 For an eligible service fault:
 
-1. Persist the safe mode latch and publish the fault locally.
+1. Persist the fault safe-mode latch and publish the fault locally.
 2. If failure announcement reporting is enabled, report channels are configured, the
    shared companion is connected, and the observed repeater mode permits
    transmission (`forward` or `monitor`), allow a failure announcement report within
@@ -1288,12 +1304,16 @@ them:
 Report missing optional features (web interface, map, polygons, MeshMapper, or
 companion messaging) without failing on other installation methods.
 
-For a fresh Debian install, persist a commissioning safe-mode latch before
-enabling and starting the service; it must not automatically enable RF.
+For a fresh Debian install, enable and start the service without creating a
+safe-mode latch. Migrate the obsolete `initial commissioning` latch on
+upgrade without clearing any fault or operator-requested latch.
 When creating the one-time setup marker, print the configured web port and
 available local addresses or an actionable fallback if none are available.
-OpenHop must already be configured as `no_tx` because the service cannot
-control it before API credentials are supplied. Manage the Debian configuration as a dpkg conffile so local edits
+Do not create a safe-mode latch for commissioning: missing/stale GPS applies
+Monitor, and a valid fix immediately enables normal zone policy. Warn
+operators that the service does not hold `no_tx` during commissioning; stop
+the service or use OpenHop's independent transmit-disable controls to
+guarantee no RF before setup. Manage the Debian configuration as a dpkg conffile so local edits
 receive the standard upgrade choices. Byte-compile with `py3compile`
 for the installed Python version; do not ship `.pyc` files.
 Use `debhelper`, `dh-python`, and `pybuild`. Do not install packages into
@@ -1345,10 +1365,11 @@ controllable clock, must cover:
    as its fallback when coverage is unavailable, and
    `monitor_mode` mapping.
 3. GPS startup, explicit fix loss, stale data, reconnect, and that GPS loss
-   never releases a manual override or safe mode.
+   never releases a manual override or either persistent lock.
 4. Repeat dwell/cooldown under boundary jitter and wall-clock changes.
-5. Overrides bypassing zones/GPS, clearing on restart, persistent explicit
-   `no_tx` and fault latches, and refusal to clear without successful checks.
+5. Overrides bypassing zones/GPS, clearing on restart, persistent operator
+   TX lockout and fault latches, safe-mode refusal to clear without successful
+   checks, and lockout clearing without clearing safe mode.
 6. OpenHop mode mapping, live readback shape, success=false within HTTP 200,
    uncertain write outcomes, auth failures, external control conflict, and
    suppression of unchanged writes.
@@ -1383,7 +1404,7 @@ controllable clock, must cover:
     transport permissions, and secret redaction.
 15. Maintenance requests from the web and DMs: authorization, duplicate
     requests, disabled or denied reboot, service-only
-    restart, safe mode persistence, and no TX on a blocked shared radio.
+    restart, both persistent latches, and no TX on a blocked shared radio.
     Mock the OS reboot interface in CI.
 16. Diagnostic tracing: disabled behavior, sampling and immediate events,
     confirmed versus requested modes, GPS gaps, session boundaries, bounded

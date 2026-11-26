@@ -10,8 +10,8 @@ Security (DESIGN.md section 9):
 * Accounts are stored in ``web.auth_file`` as ``user:role:werkzeug-hash``
   lines (role ``admin`` or ``operator``); administrators can change their
   password in the web interface or use ``openhop-geofence passwd``.
-* Sessions use a signed cookie whose key is random per process, so logins
-  reset on restart and nothing is written to disk.
+* Login uses a password only. Sessions use signed cookies with a persistent
+  service-owned key so remembered sessions survive service restarts.
 * Mutations require POST, a CSRF token header, and a same-origin request.
   The Host header must be an IP literal, ``localhost``, or this host's name.
 * Request bodies and login attempts are bounded.
@@ -27,8 +27,10 @@ import logging
 import os
 import secrets
 import socket
+import stat
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -43,11 +45,13 @@ log = logging.getLogger(__name__)
 MAX_BODY_BYTES = 512 * 1024
 LOGIN_WINDOW_SECONDS = 300
 LOGIN_MAX_FAILURES = 5
+REMEMBER_DAYS = 30
 ROLES = ("admin", "operator")
 ACTIONS = {
     "force_repeat": ("override", {"mode": "forward"}),
     "force_monitor": ("override", {"mode": "monitor"}),
     "disable_tx": ("disable_tx", {}),
+    "clear_tx_lockout": ("clear_tx_lockout", {}),
     "resume": ("resume", {}),
     "clear": ("clear", {}),
     "reload": ("reload", {}),
@@ -124,6 +128,45 @@ def close_initial_setup(state_dir: Path) -> bool:
     finally:
         os.close(fd)
     return True
+
+
+def _session_signing_key(state_dir: Path | None) -> bytes:
+    """Load or create a persistent Flask signing key when a state directory is configured."""
+    if state_dir is None:
+        return secrets.token_bytes(32)
+    state_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    path = state_dir / "web-session.key"
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow)
+    except FileNotFoundError:
+        key = secrets.token_bytes(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
+        except FileExistsError:
+            fd = os.open(path, os.O_RDONLY | nofollow)
+        else:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                if stream.write(key) != len(key):
+                    raise OSError("short write creating web session key")
+                stream.flush()
+                os.fsync(stream.fileno())
+            dir_fd = os.open(state_dir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+            return key
+
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        key = stream.read(33)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o777 != 0o600 or len(key) != 32):
+        raise OSError(f"{path} must be a service-owned regular 32-byte file with mode 0600")
+    return key
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +256,10 @@ def create_app(controller: Any, *, trace: Any = None, setup_dir: Path | None = N
 
     app = Flask(__name__)
     app.config.update(
-        SECRET_KEY=secrets.token_bytes(32),
+        SECRET_KEY=_session_signing_key(setup_dir),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
+        PERMANENT_SESSION_LIFETIME=timedelta(days=REMEMBER_DAYS),
         MAX_CONTENT_LENGTH=MAX_BODY_BYTES,
         JSON_SORT_KEYS=False,
     )
@@ -326,16 +370,23 @@ def create_app(controller: Any, *, trace: Any = None, setup_dir: Path | None = N
         if throttle.blocked(addr):
             return error(429, "too many failed logins; try again later")
         data = request.get_json(silent=True) or {}
-        user, password = str(data.get("username", "")), str(data.get("password", ""))
+        password = data.get("password")
         from werkzeug.security import check_password_hash
 
-        account = load_accounts(cfg().web.auth_file).get(user)
-        if account is None or not check_password_hash(account[1], password):
+        matches = []
+        if isinstance(password, str) and 1 <= len(password) <= 1024:
+            for username, account in load_accounts(cfg().web.auth_file).items():
+                if check_password_hash(account[1], password):
+                    matches.append((username, account))
+        if len(matches) != 1:
             throttle.failed(addr)
-            log.warning("web login failed for %r from %s", user[:32], addr)
-            return error(401, "invalid username or password")
+            log.warning("web login failed from %s", addr)
+            return error(401, "invalid password")
+        user, account = matches[0]
         throttle.succeeded(addr)
         session.clear()
+        remember = data.get("remember") is True
+        session.permanent = remember
         change_required = user == "admin" and account[0] == "admin" and check_password_hash(account[1], "geofence")
         session.update(user=user, role=account[0], csrf=secrets.token_urlsafe(32),
                        credential=hashlib.sha256(account[1].encode()).hexdigest(),

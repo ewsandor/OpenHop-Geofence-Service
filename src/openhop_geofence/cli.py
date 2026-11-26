@@ -24,7 +24,7 @@ from pathlib import Path
 from . import __version__
 from . import config as config_mod
 from .config import ConfigError
-from .state import RuntimeDir, SafeModeLatch, SafeModeStore, utc_now
+from .state import RuntimeDir, SafeModeLatch, SafeModeStore, TxLockoutStore, utc_now
 from .system import RESTART_EXIT_STATUS
 
 log = logging.getLogger("openhop_geofence")
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"configuration file (default {DEFAULT_CONFIG})")
     p.add_argument("--check-config", action="store_true", help="validate the configuration and exit")
     p.add_argument("--state-dir", default=_first_dir("STATE_DIRECTORY", "/var/lib/openhop-geofence"),
-                   help="durable state (safe mode latch)")
+                   help="durable state (fault latch, TX lockout, and session key)")
     p.add_argument("--cache-dir", default=_first_dir("CACHE_DIRECTORY", "/var/cache/openhop-geofence"),
                    help="MeshMapper coverage snapshot")
     p.add_argument("--runtime-dir", default=_first_dir("RUNTIME_DIRECTORY", "/run/openhop-geofence"),
@@ -218,6 +218,7 @@ def run_service(args: argparse.Namespace) -> int:
 
     controller = Controller(
         cfg, args.config, gps=gps, safe_store=SafeModeStore(args.state_dir),
+        tx_lockout_store=TxLockoutStore(args.state_dir),
         make_openhop=make_openhop, make_meshmapper=make_meshmapper, notifier=notifier,
         time_trusted=clock_synchronized,
     )
@@ -265,11 +266,18 @@ def run_service(args: argparse.Namespace) -> int:
         if not ok:
             log.error(why)
         else:
-            if warn := ensure_auth_file_warning(cfg.web.auth_file):
-                log.warning(warn)
-            web = WebServer(create_app(controller, trace=trace, setup_dir=Path(args.state_dir)), cfg.web.bind, cfg.web.port)
-            if not web.start():
-                why = web.error
+            try:
+                if warn := ensure_auth_file_warning(cfg.web.auth_file):
+                    log.warning(warn)
+                web = WebServer(
+                    create_app(controller, trace=trace, setup_dir=Path(args.state_dir)),
+                    cfg.web.bind, cfg.web.port,
+                )
+                if not web.start():
+                    why = web.error
+            except OSError as exc:
+                why = f"web interface unavailable: {exc}"
+                log.exception("%s", why)
         # Shown by the CLI status and logs; the browser cannot see a dead server.
         controller.status_providers["web_server"] = lambda: {"error": why or None}
 

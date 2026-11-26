@@ -4,14 +4,15 @@ This module is pure logic with no I/O so it can be tested exhaustively.
 
 Decision priority (first match wins):
 
-1. Safe mode, including explicit Disable all TX: ``no_tx``.
-2. Manual Force Repeat or Force Monitor override.
-3. Missing or stale GPS: Monitor.
-4. Any containing Monitor zone: Monitor.
-5. Any containing Repeat zone: Repeat.
-6. MeshMapper, when enabled and valid for the position: covered squares
+1. Fault safe mode: ``no_tx``.
+2. Explicit operator TX lockout: ``no_tx``.
+3. Manual Force Repeat or Force Monitor override.
+4. Missing or stale GPS: Monitor.
+5. Any containing Monitor zone: Monitor.
+6. Any containing Repeat zone: Repeat.
+7. MeshMapper, when enabled and valid for the position: covered squares
    select Monitor; uncovered or weakly covered squares select Repeat.
-7. Outside policy (``policy.outside``): Monitor, Repeat, or Last.
+8. Outside policy (``policy.outside``): Monitor, Repeat, or Last.
 
 The Monitor policy result is applied as OpenHop ``monitor`` or ``no_tx``
 according to ``policy.monitor_mode``.
@@ -33,6 +34,7 @@ WEAK = "weak"
 
 # Decision sources, in priority order.
 SRC_SAFE_MODE = "safe_mode"
+SRC_TX_LOCKOUT = "tx_lockout"
 SRC_OVERRIDE = "override"
 SRC_GPS = "gps"
 SRC_MONITOR_ZONE = "monitor_zone"
@@ -91,6 +93,7 @@ def decide(
     outside: str,
     held: str | None,
     monitor_mode: str,
+    tx_lockout: bool = False,
 ) -> Decision:
     """Apply the decision priority.
 
@@ -99,6 +102,8 @@ def decide(
     """
     if safe_mode:
         return Decision(SRC_SAFE_MODE, "no_tx", "no_tx", "safe mode", False)
+    if tx_lockout:
+        return Decision(SRC_TX_LOCKOUT, "no_tx", "no_tx", "operator TX lockout", False)
     if override == "forward":
         return Decision(SRC_OVERRIDE, "forward", "forward", "Force Repeat override", False)
     if override == "monitor":
@@ -134,7 +139,7 @@ class Hysteresis:
 
     Transitions to Monitor are immediate. Repeat requires continuous
     eligibility for ``repeat_delay`` and at least ``minimum_monitor`` since
-    entering Monitor. Manual and safe mode decisions bypass the timers.
+    entering Monitor. Overrides and either persistent lock bypass the timers.
     """
 
     def __init__(self, repeat_delay: float, minimum_monitor: float, now: float):
@@ -155,8 +160,8 @@ class Hysteresis:
         (``monitor_mode``) is applied.
         """
         if not decision.automatic:
-            # Overrides and safe mode bypass timers. Track state so a later
-            # automatic Monitor decision is handled consistently.
+            # Overrides and persistent locks bypass timers. Track state so a
+            # later automatic Monitor decision is handled consistently.
             if decision.openhop_mode == "forward":
                 self.repeating = True
             elif self.repeating:
